@@ -1,0 +1,5 @@
+type: simple
+num_players: 3
+num_choices: 6
+collision_reward: 2
+share_reward: true
