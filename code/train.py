@@ -1,6 +1,6 @@
 from speaker import Speaker
 from listener import Listener
-from game import SignalingBanditsGame
+from game import SimpleGame, SignalingBanditsGame
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ from statistics import mean
 
 lr = 1e-4
 num_epochs = 1000
-num_batches_per_epoch = 20
+num_batches_per_epoch = 100
 
 def compute_stats(utilities, choices, rewards):
     #breakpoint()
@@ -27,7 +27,8 @@ def run_epoch(split, speaker, listener, optimizer, loss_func):
     batch_losses = []
     batch_accuracy = []
     for _ in range(num_batches_per_epoch):
-        game = SignalingBanditsGame()
+        game = SimpleGame()
+        
         utilities = game.generate_batch()
         utilities = torch.from_numpy(utilities)
 
@@ -40,17 +41,15 @@ def run_epoch(split, speaker, listener, optimizer, loss_func):
 
         #rf_loss = -(log_probs * rewards).mean()
         #loss = rf_loss
-        model_choices = torch.argmax(logits, dim=-1)
+        preds = torch.argmax(logits, dim=-1)
         ground_truth = torch.argmax(utilities, dim=-1)
 
-        rewards = game.compute_rewards(utilities, model_choices.unsqueeze(-1))
-        avg_reward = compute_stats(utilities, model_choices, rewards)
-        accuracy = (ground_truth == model_choices).float().mean().item()
+        rewards = game.compute_rewards(utilities, preds.unsqueeze(-1))
+        avg_reward = compute_stats(utilities, preds, rewards)
+        accuracy = (ground_truth == preds).float().mean().item()
 
-        #breakpoint()
-        #choices_one_hot = F.one_hot(choices).float()
-        #ground_truth_one_hot = F.one_hot(ground_truth).float()
-        loss = loss_func(logits, ground_truth)
+        # multiply by -1 bc we are maximizing the expected reward which means minimizing the negative of that
+        loss = -1 * torch.bmm(logits.unsqueeze(1), utilities.unsqueeze(-1)).squeeze().sum()
         #breakpoint()
 
         if training:
@@ -65,7 +64,7 @@ def run_epoch(split, speaker, listener, optimizer, loss_func):
     print('avg reward', mean(batch_rewards))
     print('train loss', mean(batch_losses))
     print('accuracy', mean(batch_accuracy))
-    print('choices', model_choices.float().mean().item())
+    print('predictions', preds.float().mean().item())
 
 def main():
     s = Speaker()
@@ -79,7 +78,6 @@ def main():
 
     for i in range(num_epochs):
         print('epoch', i)
-        if i > 10: breakpoint()
         run_epoch('train', s, l, optimizer, loss_func)
         run_epoch('val', s, l, optimizer, loss_func)
 
