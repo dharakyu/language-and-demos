@@ -51,8 +51,12 @@ class SignalingBanditsGame():
         self.shape_utilities = np.linspace(start=-max_shape_val, stop=max_shape_val, num=num_shapes)
 
         self.embeddings, self.rewards = self.get_reward_matrix()
-        self.reward_matrix = np.concatenate((self.embeddings, self.rewards), dim=1)
-        self.embedding2reward = zip(self.embeddings, self.rewards)
+        rewards_unsqueezed = np.expand_dims(self.rewards, axis=1)
+        self.reward_matrix = np.concatenate((self.embeddings, rewards_unsqueezed), axis=1)
+        
+        # convert embeddings to tuples so they can be used as keys
+        embeddings_as_tuples = [tuple(embedding) for embedding in self.embeddings.tolist()]
+        self.embedding2reward = dict(zip(embeddings_as_tuples, self.rewards.tolist()))
 
     def get_reward_matrix(self):
         """
@@ -79,7 +83,7 @@ class SignalingBanditsGame():
 
                 embeddings.append(embedding)
                 rewards.append(color_utility + shape_utility)
-
+        
         return np.array(embeddings), np.array(rewards)
 
     def sample_game(self):
@@ -92,7 +96,7 @@ class SignalingBanditsGame():
         num_objects = self.num_colors * self.num_shapes
         indices = np.random.choice(num_objects, size=self.num_choices, replace=False)
 
-        game = self.reward_matrix[indices, -1]  # lop off the last element bc that's the reward
+        game = self.reward_matrix[indices, :-1]  # lop off the last element bc that's the reward
         return game
 
     def sample_batch(self, batch_size=32):
@@ -102,14 +106,15 @@ class SignalingBanditsGame():
         Return
         batch_games: np.array of size(batch_size, self.num_choices, self.num_colors + self.num_shapes)
         """
-        batch_games = np.array(shape=(batch_size, self.num_choices, self.num_colors + self.num_shapes))
+        batch_games = np.zeros(shape=(batch_size, self.num_choices, self.num_colors + self.num_shapes))
+        
         for i in range(batch_size):
             game = self.sample_game()
             batch_games[i, :, :] = game
 
         return batch_games
 
-    def compute_reward(self, games, preds):
+    def compute_rewards(self, games):
         """
         Given a batch of games and model prediction, compute the rewards
 
@@ -117,44 +122,18 @@ class SignalingBanditsGame():
         accuracy: np.array of size (batch_size)
         """
         batch_size = games.shape[0]
-        batch_reward = np.array((batch_size))
-
-        for i in range(batch_size):
-            game_utilities = games[i]
-            game_rewards = np.array((self.num_choices,))
-            for j in range(self.num_choices):
-                game_rewards[j] = self.embedding2reward[game_utilities[j]]
-
-            prediction_idx = preds[i]
-            predicted_object = games[i, prediction_idx, :]
-            reward = self.embedding2reward[predicted_object]
-            reward_normalized = reward / game_rewards.max()
-
-            batch_reward[i] = reward_normalized
-
-        return batch_reward
-
-    def get_ground_truth(self, games):
-        """
-        Given a batch of games, return the indices of the object in each game that 
-        has the highest associated utility
-
-        Return:
-        ground_truth: np.array of size (batch_size)
-        """
-        batch_size = games.shape[0]
-        ground_truth = np.array((batch_size))
+        batch_rewards = []
         
         for i in range(batch_size):
             game_utilities = games[i]
-            game_rewards = np.array((self.num_choices,))
+            game_rewards = np.zeros(shape=(self.num_choices))
             for j in range(self.num_choices):
-                game_rewards[j] = self.embedding2reward[game_utilities[j]]
-            
-            idx = np.argmax(game_rewards)
-            ground_truth[i] = idx
-
-        return ground_truth
+                # need to convert to tuple for look up
+                embedding_as_tuple = tuple(game_utilities[j].tolist())
+                game_rewards[j] = self.embedding2reward[embedding_as_tuple]
+            batch_rewards.append(game_rewards)
+ 
+        return torch.Tensor(batch_rewards)
             
 
             

@@ -6,32 +6,13 @@ import numpy as np
 import data
 
 """
-The speaker agent embeds the game state and produces a message conditioned on that embedding
+The speaker agent embeds the game state and the rewards matrix, and produces a message conditioned on that embedding
 """
-class SetTransformer(nn.Module):
-    def __init__(self, input_dim=64):
-        super().__init__()
-        self.input_dim = input_dim
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.input_dim,
-            nhead=8,
-            dim_feedforward=self.input_dim,
-        )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer, num_layers=2, norm=nn.LayerNorm(self.input_dim)
-        )
-
-    def forward(self, feats):
-        # Transpose before and after
-        feats = feats.transpose(1, 0)
-        feats_emb = self.transformer(feats)
-        feats_emb = feats_emb.transpose(1, 0)
-        return feats_emb
-
 
 class Speaker(nn.Module):
-    def __init__(self, num_choices=3, embedding_dim=64, vocab_size=20, hidden_size=100, softmax_temp=1.0, max_message_len=4):
+    def __init__(self, num_choices=3, num_objects=9, object_encoding_len=6,
+                embedding_dim=64, vocab_size=20, hidden_size=100, 
+                softmax_temp=1.0, max_message_len=4):
         super().__init__()
         assert embedding_dim % 2 == 0, "input dim must be divisible by 2"
         self.embedding_dim = embedding_dim
@@ -40,26 +21,54 @@ class Speaker(nn.Module):
         self.hidden_size = hidden_size
         self.max_message_len = max_message_len
 
-        #self.transformer = SetTransformer(self.embedding_dim)
+        self.games_embedding = nn.Linear(num_choices * object_encoding_len, self.embedding_dim // 2)
+        self.reward_matrix_embedding = nn.Linear(num_objects * (object_encoding_len + 1), self.embedding_dim // 2)
 
-        #self.feat_mlp = nn.Linear(2, self.embedding_dim)    # first dim needs to match the features
-        #self.proj_mlp = nn.Linear(self.embedding_dim * 3, 20)
-        #self.logit_mlp = nn.Linear(self.embedding_dim, 1)
-        #self.message_mlp = nn.Linear(num_choices * self.embedding_dim, self.vocab_size)
-
-        self.game_embedding = nn.Linear(num_choices, self.vocab_size)
-        self.init_h = nn.Linear(self.vocab_size, self.hidden_size)
+        self.init_h = nn.Linear(self.embedding_dim, self.hidden_size)
 
         self.onehot_embedding = nn.Linear(self.vocab_size, self.embedding_dim)
 
         self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
         self.outputs2vocab = nn.Linear(self.hidden_size, self.vocab_size)
 
-    def forward(self, utilities, greedy=False):
-        batch_size, num_choices = utilities.shape
+    def embed_games_and_reward_matrix(self, games, reward_matrix):
+        """
+        Parameters:
+        games: torch.Tensor of size (batch_size, num_choices, object_encoding_length)
+        reward_matrix: torch.Tensor of size (num_objects, object_encoding_length+1)
 
-        game_emb = self.game_embedding(utilities)   # shape (batch_size, vocab_size)
-        states = self.init_h(game_emb)
+        Return:
+        embedding: torch.Tensor of size (batch_size, hidden_size)
+        """
+        # flatten games matrix to be 2d and reward_matrix to be 1d
+        batch_size = games.shape[0]
+        games = games.view(batch_size, -1).float()
+        reward_matrix = reward_matrix.view(-1).float()
+
+        games_emb = self.games_embedding(games) # (batch_size, hidden_size // 2)
+        reward_matrix_emb = self.reward_matrix_embedding(reward_matrix) # (hidden_size // 2)
+        reward_matrix_emb  = reward_matrix_emb.repeat(batch_size, 1)   # (batch_size, hidden_size // 2)
+
+        combined_emb = torch.cat((games_emb, reward_matrix_emb), dim=1)
+        return combined_emb
+        
+    
+    def forward(self, games, reward_matrix, greedy=False):
+        """
+        Parameters:
+        games: torch.Tensor of size (batch_size, num_choices, object_encoding_length)
+        reward_matrix: torch.Tensor of size (num_objects, object_encoding_length+1)
+
+        Return:
+        lang_tensor: torch.Tensor of size (batch_size, max_message_len)
+        lang_len: torch.Tensor of size (batch_size,)
+        """
+
+        batch_size = games.shape[0]
+
+        #game_emb = self.game_embedding(games)   # shape (batch_size, vocab_size)
+        emb = self.embed_games_and_reward_matrix(games, reward_matrix)
+        states = self.init_h(emb)
         states = states.unsqueeze(0)
 
         # This contains the batch of sampled onehot vectors
@@ -92,6 +101,7 @@ class Speaker(nn.Module):
             # finished generating language.
             if all(done_sampling):
                 break
+            
             outputs, states = self.gru(inputs, states)  # outputs: (L=1,B,H)
             outputs = outputs.squeeze(0)                # outputs: (B,H)
             outputs = self.outputs2vocab(outputs)       # outputs: (B,V)

@@ -11,13 +11,11 @@ class RNNEncoder(nn.Module):
     def __init__(self, embedding_module, hidden_size=100):
         super(RNNEncoder, self).__init__()
         self.embedding = embedding_module
-        #self.embedding_dim = embedding_module.embedding_dim
-        self.embedding_dim = 64
+        self.embedding_dim = embedding_module.embedding_dim
         self.hidden_size = hidden_size
         self.gru = nn.GRU(self.embedding_dim, hidden_size)
 
     def forward(self, seq, length):
-        breakpoint()
         batch_size = seq.size(0)
 
         if batch_size > 1:
@@ -46,46 +44,48 @@ class RNNEncoder(nn.Module):
 
 class Listener(nn.Module):
     def __init__(self, 
-                num_choices=3, embedding_dim=64, vocab_size=20, hidden_size=100, softmax_temp=1.0, max_message_len=4):
+                num_choices=3, object_encoding_len=6, 
+                embedding_dim=64, vocab_size=20, hidden_size=100):
+        """
+        Note: embedding_dim is used as the embedding size for both the message embedding
+        and the game embedding
+        """
         super(Listener, self).__init__()
-        #self.embedding = nn.Linear(vocab_size, hidden_size)
-        #self.lang_model = RNNEncoder(self.embedding)
-        #self.vocab_size = embedding_module.num_embeddings
-        self.vocab_size = vocab_size
-        self.hidden_size = hidden_size
+        self.message_embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.lang_model = RNNEncoder(self.message_embedding)
 
-        # encode the messages
-        self.message_encoder = nn.GRU(vocab_size, hidden_size)
+        self.games_embedding = nn.Linear(object_encoding_len, embedding_dim)
 
-        # squish message encoding to size (batch_size, 3)
-        self.emb2logits = nn.Linear(hidden_size, num_choices)
+        # self.lang_model will output something of size (batch_size, hidden_size) so 
+        # we need to project it to (batch_size, embedding_dim)
+        self.bilinear = nn.Linear(self.lang_model.hidden_size, embedding_dim, bias=False)
 
-        #self.bilinear = nn.Linear(self.lang_model.hidden_size, self.feat_size, bias=False)
+    def embed_games(self, games):
+        """
+        Parameters:
+        games: torch.Tensor of size (batch_size, num_choices, object_encoding_length)
 
-    def embed_features(self, feats):
-        batch_size = feats.shape[0]
-        n_obj = feats.shape[1]
-        rest = feats.shape[2:]
-        feats_flat = feats.reshape(batch_size * n_obj, *rest)  # (batch_size*n_obj, rest)
-        feats_emb_flat = self.feat_model(feats_flat)    # (batch_size*n_obj, emb_len)
+        Return:
+        embedding: torch.Tensor of size (batch_size, hidden_size)
+        """
+        # flatten games matrix to be 2d
+        #batch_size = games.shape[0]
+        #games = games.view(batch_size, -1).float()
 
-        feats_emb = feats_emb_flat.unsqueeze(1).view(batch_size, n_obj, -1) # (batch_size, n_obj, emb_len)
+        games_emb = self.games_embedding(games.float()) # (batch_size, num_choices, embedding_dim)
+        return games_emb
 
-        return feats_emb
-
-    def forward(self, lang, lang_length):
-        # Embed features
-        #feats_emb = self.embed_features(feats) # don't embed images in simple version of game
+    def forward(self, games, lang, lang_length):
+        # Embed games
+        games_emb = self.embed_games(games) # (batch_size, num_choices, embedding_dim)
+        
         # Embed language
-        #lang_emb = self.lang_model(lang, lang_length)
-        # reorder from (batch_size, seq_len, vocab_size) to (seq_len, batch_size, vocab_size)
-        lang = lang.transpose(0, 1)
+        lang_emb = self.lang_model(lang, lang_length)   # (batch_size, hidden_size)
+        
+        # Bilinear term: lang embedding space to game embedding space
+        lang_bilinear = self.bilinear(lang_emb) # (batch_size, embedding_dim)
 
-        _, hidden = self.message_encoder(lang)
-        # squeeze hidden which is size (1, batch_size, hidden_size)
-        hidden = hidden.squeeze(0)
+        # Compute dot products
+        scores = torch.einsum('ijh,ih->ij', (games_emb, lang_bilinear))
 
-        logits = self.emb2logits(hidden)
-        logits = torch.log_softmax(logits, dim=-1)
-
-        return logits
+        return scores

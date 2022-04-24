@@ -15,48 +15,48 @@ lr = 1e-4
 num_epochs = 1000
 num_batches_per_epoch = 100
 
-def compute_stats(utilities, choices, rewards):
-    #breakpoint()
-    # avg_reward = (rewards.squeeze(-1) / utilities.sum(1)).mean()
-    avg_reward = (rewards.squeeze(-1)).mean()
-    return avg_reward
-
 def run_epoch(split, speaker, listener, optimizer, loss_func):
     training = split == 'train'
     batch_rewards = []
     batch_losses = []
     batch_accuracy = []
     for _ in range(num_batches_per_epoch):
-        game = SimpleGame()
+        game = SignalingBanditsGame()
         
-        utilities = game.generate_batch()
-        utilities = torch.from_numpy(utilities)
+        games = game.sample_batch()
+        games = torch.from_numpy(games)
+        reward_matrix = game.reward_matrix
+        reward_matrix = torch.from_numpy(reward_matrix)
 
-        messages, message_lens = speaker(utilities)
         #breakpoint()
-        logits = listener(messages, message_lens)
-        #choices = torch.tensor(np.random.randint(0, 3, size=(32,)))
-       
-        #breakpoint()
+        messages, message_lens = speaker(games, reward_matrix)
+        scores = listener(games, messages, message_lens)
 
-        #rf_loss = -(log_probs * rewards).mean()
-        #loss = rf_loss
-        preds = torch.argmax(logits, dim=-1)
-        ground_truth = torch.argmax(utilities, dim=-1)
+        # get the listener predictions
+        preds = torch.argmax(scores, dim=-1)    # (batch_size)
 
-        rewards = game.compute_rewards(utilities, preds.unsqueeze(-1))
-        avg_reward = compute_stats(utilities, preds, rewards)
-        accuracy = (ground_truth == preds).float().mean().item()
+        # get the rewards associated with the objects in each game
+        game_rewards = game.compute_rewards(games)  # (batch_size, num_choices)
+
+        # what reward did the model actually earn
+        model_rewards = game_rewards.gather(-1, preds.unsqueeze(-1))
+
+        # what is the maximum reward and the associated index
+        max_rewards, argmax_rewards = game_rewards.max(-1)
+
+        avg_reward = model_rewards.squeeze(-1).mean().item()
+        avg_max_reward = max_rewards.mean().item()
+
+        accuracy = (argmax_rewards == preds).float().mean().item()
 
         # multiply by -1 bc we are maximizing the expected reward which means minimizing the negative of that
-        loss = -1 * torch.bmm(logits.unsqueeze(1), utilities.unsqueeze(-1)).squeeze().sum()
-        #breakpoint()
+        loss = -1 * torch.bmm(scores.unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
 
         if training:
             loss.backward()
             optimizer.step()
 
-        batch_rewards.append(avg_reward.item())
+        batch_rewards.append(avg_reward / avg_max_reward)
         batch_losses.append(loss.item())
         batch_accuracy.append(accuracy)
     
