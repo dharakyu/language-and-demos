@@ -11,7 +11,7 @@ import numpy as np
 
 from statistics import mean
 
-lr = 1e-4
+lr = 1e-5
 num_epochs = 1000
 num_batches_per_epoch = 100
 
@@ -23,20 +23,21 @@ def run_epoch(split, speaker, listener, optimizer, loss_func):
     for _ in range(num_batches_per_epoch):
         game = SignalingBanditsGame()
         
-        games = game.sample_batch()
-        games = torch.from_numpy(games)
-        reward_matrix = game.reward_matrix
-        reward_matrix = torch.from_numpy(reward_matrix)
+        reward_matrices, listener_views = game.sample_batch()
+        listener_views = torch.from_numpy(listener_views).float()
+        reward_matrices = torch.from_numpy(reward_matrices).float()
 
         #breakpoint()
-        messages, message_lens = speaker(games, reward_matrix)
-        scores = listener(games, messages, message_lens)
+        messages = speaker(reward_matrices)
+        message_lens = None
+        scores = listener(listener_views, messages, message_lens)
+        #breakpoint()
 
         # get the listener predictions
         preds = torch.argmax(scores, dim=-1)    # (batch_size)
 
         # get the rewards associated with the objects in each game
-        game_rewards = game.compute_rewards(games)  # (batch_size, num_choices)
+        game_rewards = game.compute_rewards(preds, listener_views, reward_matrices)  # (batch_size, num_choices)
 
         # what reward did the model actually earn
         model_rewards = game_rewards.gather(-1, preds.unsqueeze(-1))
