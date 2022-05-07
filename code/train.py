@@ -11,27 +11,23 @@ import numpy as np
 
 from statistics import mean
 
-lr = 1e-5
-num_epochs = 1000
-num_batches_per_epoch = 100
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+from collections import defaultdict
 
-def run_epoch(split, speaker, listener, optimizer, loss_func):
+def run_epoch(split, speaker, listener, optimizer, args):
     training = split == 'train'
     batch_rewards = []
     batch_losses = []
     batch_accuracy = []
-    for _ in range(num_batches_per_epoch):
+    for _ in range(args.num_batches_per_epoch):
         game = SignalingBanditsGame()
         
         reward_matrices, listener_views = game.sample_batch()
         listener_views = torch.from_numpy(listener_views).float()
         reward_matrices = torch.from_numpy(reward_matrices).float()
 
-        #breakpoint()
-        messages = speaker(reward_matrices)
-        message_lens = None
+        messages, message_lens = speaker(reward_matrices)
         scores = listener(listener_views, messages, message_lens)
-        #breakpoint()
 
         # get the listener predictions
         preds = torch.argmax(scores, dim=-1)    # (batch_size)
@@ -66,20 +62,72 @@ def run_epoch(split, speaker, listener, optimizer, loss_func):
     print('train loss', mean(batch_losses))
     print('accuracy', mean(batch_accuracy))
     print('predictions', preds.float().mean().item())
+    
+    metrics = {
+        'reward': mean(batch_rewards),
+        'loss': mean(batch_losses),
+        'accuracy': mean(batch_accuracy),
+        'prediction_index': preds.float().mean().item()
+    }
+
+    return metrics
+
+def get_args():
+    parser = ArgumentParser(
+        description='Train',
+        formatter_class=ArgumentDefaultsHelpFormatter)
+
+    parser.add_argument('--batch_size', default=32, type=int)
+    parser.add_argument('--epochs', default=40, type=int)
+    parser.add_argument('--num_batches_per_epoch', default=100, type=int)
+    parser.add_argument('--log_interval', default=100, type=int)
+    parser.add_argument('--lr', default=1e-5, type=float)
+
+
+    parser.add_argument('--cuda', action='store_true')
+    parser.add_argument('--wandb', action='store_true')
+    parser.add_argument(
+        "--wandb_project_name", default="signaling-bandits", help="wandb project name"
+    )
+    parser.add_argument('--name', default=None)
+
+    args = parser.parse_args()
+    return args
 
 def main():
+    args = get_args()
     s = Speaker()
     l = Listener()
-    lr = 1e-5
-    loss_func = nn.CrossEntropyLoss()
 
     optimizer = optim.Adam(list(s.parameters()) +
                            list(l.parameters()),
-                           lr=lr)
+                           lr=args.lr)
 
-    for i in range(num_epochs):
+    if args.wandb:
+        import wandb
+        wandb.init(args.wandb_project_name, config=args)
+
+        if args.name is not None:
+            wandb.run.name = args.name
+        else:
+            args.name = wandb.run.name
+
+    metrics = defaultdict(list)
+    for i in range(args.epochs):
         print('epoch', i)
-        run_epoch('train', s, l, optimizer, loss_func)
-        run_epoch('val', s, l, optimizer, loss_func)
+        train_metrics = run_epoch('train', s, l, optimizer, args)
+        val_metrics = run_epoch('val', s, l, optimizer, args)
+
+        for metric, value in train_metrics.items():
+            metrics['train_{}'.format(metric)] = value
+
+        for metric, value in val_metrics.items():
+            metrics['val_{}'.format(metric)] = value
+
+        metrics['current_epoch'] = i
+
+        if args.wandb:
+            wandb.log(metrics)
+        
 
 main()

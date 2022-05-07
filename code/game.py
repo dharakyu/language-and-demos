@@ -42,7 +42,6 @@ class SignalingBanditsGame():
     def __init__(self, num_choices=3, 
                     num_colors=3, num_shapes=3, 
                     max_color_val=2, max_shape_val=1,
-                    randomize_rewards=True
                 ):
         self.num_choices = num_choices
         self.num_colors = num_colors
@@ -79,7 +78,7 @@ class SignalingBanditsGame():
             #    self.shape_utilities = np.flip(self.shape_utilities)
 
         indices = np.random.choice(self.num_colors*self.num_shapes, size=self.num_choices, replace=False)
-
+        #indices = [1, 4, 8]
         curr_idx = 0
         reward_matrix = []
         for i in range(self.num_colors):
@@ -100,7 +99,9 @@ class SignalingBanditsGame():
                 reward_matrix.append(embedding)
 
                 curr_idx += 1
-        
+        #reward_matrix = np.array(reward_matrix)
+        #keep = np.where(reward_matrix[:, -1] == 1)
+        #return reward_matrix[keep, :]
         return np.array(reward_matrix)
 
     def get_listener_view(self, reward_matrix):
@@ -136,7 +137,7 @@ class SignalingBanditsGame():
             
             batch_reward_matrices.append(reward_matrix)
             batch_listener_views.append(listener_view)
-
+        
         return np.array(batch_reward_matrices), np.array(batch_listener_views)
 
     def get_rewards_for_single_game(self, listener_view, reward_matrix):

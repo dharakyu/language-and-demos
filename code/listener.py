@@ -43,9 +43,8 @@ class RNNEncoder(nn.Module):
 
 
 class Listener(nn.Module):
-    def __init__(self, 
-                num_choices=3, object_encoding_len=6, 
-                embedding_dim=64, vocab_size=50, hidden_size=100):
+    def __init__(self, object_encoding_len=6, 
+                embedding_dim=64, vocab_size=20, hidden_size=100):
         """
         Note: embedding_dim is used as the embedding size for both the message embedding
         and the game embedding
@@ -67,29 +66,13 @@ class Listener(nn.Module):
                             nn.Linear(hidden_size, embedding_dim)
                         )
 
-    def embed_games(self, games):
-        """
-        Parameters:
-        games: torch.Tensor of size (batch_size, num_choices, object_encoding_length)
-
-        Return:
-        embedding: torch.Tensor of size (batch_size, hidden_size)
-        """
-        # flatten games matrix to be 2d
-        #batch_size = games.shape[0]
-        #games = games.view(batch_size, -1).float()
-        
-        games_emb = self.games_embedding(games.float()) # (batch_size, num_choices, embedding_dim)
-        return games_emb
-
     def forward(self, games, lang, lang_length):
         # Embed games
-        #breakpoint()
-        games_emb = self.embed_games(games) # (batch_size, num_choices, embedding_dim)
+        games_emb = self.games_embedding(games.float()) # (batch_size, num_choices, embedding_dim)
         
         # Embed language
         #lang_emb = self.lang_model(lang, lang_length)   # (batch_size, hidden_size)
-        lang_emb = self.debug_mlp(lang)
+        lang_emb = self.debug_mlp(lang) # (batch_size, embedding_dim)
         
         # Bilinear term: lang embedding space to game embedding space
         #lang_bilinear = self.bilinear(lang_emb) # (batch_size, embedding_dim)
@@ -98,4 +81,4 @@ class Listener(nn.Module):
         #scores = torch.einsum('ijh,ih->ij', (games_emb, lang_bilinear))
         scores = torch.einsum('ijh,ih->ij', (games_emb, lang_emb))
 
-        return scores
+        return F.softmax(scores, dim=1)

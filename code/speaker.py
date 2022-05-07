@@ -10,8 +10,8 @@ The speaker agent embeds the game state and the rewards matrix, and produces a m
 """
 
 class Speaker(nn.Module):
-    def __init__(self, num_choices=3, num_objects=9, object_encoding_len=6,
-                embedding_dim=64, vocab_size=50, hidden_size=100, 
+    def __init__(self, object_encoding_len=6,
+                embedding_dim=64, vocab_size=20, hidden_size=100, 
                 softmax_temp=1.0, max_message_len=4):
         super().__init__()
         assert embedding_dim % 2 == 0, "input dim must be divisible by 2"
@@ -32,35 +32,14 @@ class Speaker(nn.Module):
         self.outputs2vocab = nn.Linear(self.hidden_size, self.vocab_size)
 
         #self.debug_mlp = nn.Linear(self.embedding_dim, self.vocab_size)
-        reward_matrix_size = num_objects * (object_encoding_len+2)
         self.debug_mlp = nn.Sequential(
-                            nn.Linear(reward_matrix_size, self.hidden_size),
+                            nn.Linear(object_encoding_len+1, self.hidden_size),
                             nn.ReLU(),
                             nn.Linear(self.hidden_size, self.vocab_size)
                         )
 
-    def embed_games_and_reward_matrix(self, games, reward_matrix):
-        """
-        Parameters:
-        games: torch.Tensor of size (batch_size, num_choices, object_encoding_length)
-        reward_matrix: torch.Tensor of size (num_objects, object_encoding_length+1)
-
-        Return:
-        embedding: torch.Tensor of size (batch_size, hidden_size)
-        """
-        # flatten games matrix to be 2d and reward_matrix to be 1d
-        batch_size = games.shape[0]
-        games = games.view(batch_size, -1).float()
-        reward_matrix = reward_matrix.view(-1).float()
-
-        games_emb = self.games_embedding(games) # (batch_size, hidden_size // 2)
-        reward_matrix_emb = self.reward_matrix_embedding(reward_matrix) # (hidden_size // 2)
-        reward_matrix_emb  = reward_matrix_emb.repeat(batch_size, 1)   # (batch_size, hidden_size // 2)
-
-        combined_emb = torch.cat((games_emb, reward_matrix_emb), dim=1)
-        return combined_emb
+        self.reward_matrix_embedding = nn.Linear(object_encoding_len+2, self.embedding_dim)
         
-    
     def forward(self, reward_matrices, greedy=False):
         """
         Arguments:
@@ -70,20 +49,31 @@ class Speaker(nn.Module):
         lang_tensor: torch.Tensor of size (batch_size, max_message_len)
         lang_len: torch.Tensor of size (batch_size,)
         """
+        #batch_size = reward_matrices.shape[0]
+        #listener_views = []
+        #for i in range(batch_size):
+        #    reward_matrix = reward_matrices[i, :, :]
+        #    keep = reward_matrix[:, -1] == 1
+        #    listener_views.append(reward_matrix[keep, :])
 
-        batch_size = reward_matrices.shape[0]
+        #reduced_reward_matrices = torch.stack(listener_views)
 
-        #game_emb = self.game_embedding(games)   # shape (batch_size, vocab_size)
-        #emb = self.embed_games_and_reward_matrix(games, reward_matrix)
-        #breakpoint()
-        reshaped_reward_matrices = reward_matrices.view(batch_size, -1)
-        messages = self.debug_mlp(reshaped_reward_matrices)
+        # trim the reward matrices such that the speaker can no longer see the listener context
+        # also need to change self.debug_mlp size
+        reward_matrices = reward_matrices[:, :, :-1]
+        
+        reward_embeddings = self.debug_mlp(reward_matrices)  # (batch_size, num_objects, vocab_size)
+        messages = reward_embeddings.sum(1)    # (batch_size, vocab_size)
 
-        return messages
+        return messages, None
+
         
         """
+        emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
+        emb = emb.sum(1)    # (batch_size, embedding_dim)
+
         states = self.init_h(emb)
-        states = states.unsqueeze(0)
+        states = states.unsqueeze(0)    # (1, batch_size, hidden_size)
 
         # This contains the batch of sampled onehot vectors
         lang = []
