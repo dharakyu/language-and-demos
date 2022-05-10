@@ -68,11 +68,18 @@ class SignalingBanditsGame():
         context, then the corresponding row in reward_matrix is [0, 1, 0, 1, 0, 0, 3, 1]
         """
         if randomize_rewards:
-            np.random.shuffle(self.color_utilities)
-            np.random.shuffle(self.shape_utilities)
+            flip = np.random.randint(0, 3)
+            if flip == 1:
+                self.color_utilities = [2, 0, -2]
+            elif flip == 2:
+                self.color_utilities = [0, 2, -2]
+            else:
+                self.color_utilities = [-2, 0, 2]
+        #    np.random.shuffle(self.color_utilities)
+        #    np.random.shuffle(self.shape_utilities)
             #breakpoint()
-            #if np.random.randint(0, 2):
-            #    self.color_utilities = np.flip(self.color_utilities)
+        #    if np.random.randint(0, 2):
+        #        self.color_utilities = np.flip(self.color_utilities)
 
             #if np.random.randint(0, 2):
             #    self.shape_utilities = np.flip(self.shape_utilities)

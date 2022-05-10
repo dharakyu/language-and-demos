@@ -38,7 +38,11 @@ class Speaker(nn.Module):
                             nn.Linear(self.hidden_size, self.vocab_size)
                         )
 
-        self.reward_matrix_embedding = nn.Linear(object_encoding_len+2, self.embedding_dim)
+        self.reward_matrix_embedding = nn.Sequential(
+                                nn.Linear(object_encoding_len+1, self.hidden_size),
+                                nn.ReLU(),
+                                nn.Linear(self.hidden_size, self.embedding_dim)
+                            )
         
     def forward(self, reward_matrices, greedy=False):
         """
@@ -49,15 +53,8 @@ class Speaker(nn.Module):
         lang_tensor: torch.Tensor of size (batch_size, max_message_len)
         lang_len: torch.Tensor of size (batch_size,)
         """
-        #batch_size = reward_matrices.shape[0]
-        #listener_views = []
-        #for i in range(batch_size):
-        #    reward_matrix = reward_matrices[i, :, :]
-        #    keep = reward_matrix[:, -1] == 1
-        #    listener_views.append(reward_matrix[keep, :])
 
-        #reduced_reward_matrices = torch.stack(listener_views)
-
+        """
         # trim the reward matrices such that the speaker can no longer see the listener context
         # also need to change self.debug_mlp size
         reward_matrices = reward_matrices[:, :, :-1]
@@ -66,10 +63,20 @@ class Speaker(nn.Module):
         messages = reward_embeddings.sum(1)    # (batch_size, vocab_size)
 
         return messages, None
-
-        
         """
-        emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
+        batch_size = reward_matrices.shape[0]
+
+        truncated_reward_matrices = []
+        for i in range(batch_size):
+            game = reward_matrices[i]
+            keep = game[:, -1] == 1
+            truncated = game[keep, :-1]
+            truncated_reward_matrices.append(truncated)
+        #breakpoint()
+        truncated_reward_matrices = torch.stack(truncated_reward_matrices)
+        
+
+        emb = self.reward_matrix_embedding(truncated_reward_matrices)  # (batch_size, num_objects, embedding_dim)
         emb = emb.sum(1)    # (batch_size, embedding_dim)
 
         states = self.init_h(emb)
@@ -81,7 +88,7 @@ class Speaker(nn.Module):
         #lang_length = torch.ones(batch_size, dtype=torch.int64).to(feats.device)
         lang_length = [1 for _ in range(batch_size)]
         done_sampling = [False for _ in range(batch_size)]
-        #breakpoint()
+        
         # first input is SOS token
         # (batch_size, n_vocab)
         inputs_onehot = torch.zeros(batch_size, self.vocab_size)    # may need to move to the GPU
@@ -95,7 +102,7 @@ class Speaker(nn.Module):
 
         # (B,L,D) to (L,B,D)
         inputs_onehot = inputs_onehot.transpose(0, 1)
-
+        
         # compute embeddings
         # (1, batch_size, n_vocab) X (n_vocab, h) -> (1, batch_size, h)
         inputs = self.onehot_embedding(inputs_onehot)
@@ -157,5 +164,5 @@ class Speaker(nn.Module):
 
         # convert lang_length from a list to a Tensor
         lang_length = torch.Tensor(lang_length)
+
         return lang_tensor, lang_length
-        """

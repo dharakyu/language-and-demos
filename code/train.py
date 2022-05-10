@@ -27,8 +27,9 @@ def run_epoch(split, speaker, listener, optimizer, args):
         reward_matrices = torch.from_numpy(reward_matrices).float()
 
         messages, message_lens = speaker(reward_matrices)
+        
         scores = listener(listener_views, messages, message_lens)
-
+        
         # get the listener predictions
         preds = torch.argmax(scores, dim=-1)    # (batch_size)
 
@@ -115,6 +116,7 @@ def main():
     metrics = defaultdict(list)
     for i in range(args.epochs):
         print('epoch', i)
+        
         train_metrics = run_epoch('train', s, l, optimizer, args)
         val_metrics = run_epoch('val', s, l, optimizer, args)
 
