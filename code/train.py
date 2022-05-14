@@ -1,27 +1,23 @@
 from speaker import Speaker
 from listener import Listener
-from game import SimpleGame, SignalingBanditsGame
+from game import SignalingBanditsGame
+from arguments import get_args
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 
 import numpy as np
 
 from statistics import mean
-
-from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from collections import defaultdict
 
-def run_epoch(split, speaker, listener, optimizer, args):
+def run_epoch(split, game, speaker, listener, optimizer, args):
     training = split == 'train'
     batch_rewards = []
     batch_losses = []
     batch_accuracy = []
+
     for _ in range(args.num_batches_per_epoch):
-        game = SignalingBanditsGame()
-        
         reward_matrices, listener_views = game.sample_batch()
         listener_views = torch.from_numpy(listener_views).float()
         reward_matrices = torch.from_numpy(reward_matrices).float()
@@ -48,7 +44,8 @@ def run_epoch(split, speaker, listener, optimizer, args):
         accuracy = (argmax_rewards == preds).float().mean().item()
 
         # multiply by -1 bc we are maximizing the expected reward which means minimizing the negative of that
-        loss = -1 * torch.bmm(scores.unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
+        losses = -1 * torch.bmm(scores.exp().unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
+        loss = losses.mean()
 
         if training:
             loss.backward()
@@ -73,28 +70,6 @@ def run_epoch(split, speaker, listener, optimizer, args):
 
     return metrics
 
-def get_args():
-    parser = ArgumentParser(
-        description='Train',
-        formatter_class=ArgumentDefaultsHelpFormatter)
-
-    parser.add_argument('--batch_size', default=32, type=int)
-    parser.add_argument('--epochs', default=40, type=int)
-    parser.add_argument('--num_batches_per_epoch', default=100, type=int)
-    parser.add_argument('--log_interval', default=100, type=int)
-    parser.add_argument('--lr', default=1e-5, type=float)
-
-
-    parser.add_argument('--cuda', action='store_true')
-    parser.add_argument('--wandb', action='store_true')
-    parser.add_argument(
-        "--wandb_project_name", default="signaling-bandits", help="wandb project name"
-    )
-    parser.add_argument('--name', default=None)
-
-    args = parser.parse_args()
-    return args
-
 def main():
     args = get_args()
     s = Speaker()
@@ -103,6 +78,9 @@ def main():
     optimizer = optim.Adam(list(s.parameters()) +
                            list(l.parameters()),
                            lr=args.lr)
+    
+    metrics = defaultdict(list)
+    game = SignalingBanditsGame(num_reward_matrices=args.num_reward_matrices)
 
     if args.wandb:
         import wandb
@@ -113,12 +91,11 @@ def main():
         else:
             args.name = wandb.run.name
 
-    metrics = defaultdict(list)
     for i in range(args.epochs):
         print('epoch', i)
         
-        train_metrics = run_epoch('train', s, l, optimizer, args)
-        val_metrics = run_epoch('val', s, l, optimizer, args)
+        train_metrics = run_epoch('train', game, s, l, optimizer, args)
+        val_metrics = run_epoch('val', game, s, l, optimizer, args)
 
         for metric, value in train_metrics.items():
             metrics['train_{}'.format(metric)] = value
@@ -131,5 +108,5 @@ def main():
         if args.wandb:
             wandb.log(metrics)
         
-
+        
 main()

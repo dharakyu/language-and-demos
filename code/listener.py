@@ -44,14 +44,14 @@ class RNNEncoder(nn.Module):
 
 class Listener(nn.Module):
     def __init__(self, object_encoding_len=6, 
-                embedding_dim=64, vocab_size=20, hidden_size=100):
+                embedding_dim=64, vocab_size=20, hidden_size=100,
+                use_discrete_comm=True):
         """
         Note: embedding_dim is used as the embedding size for both the message embedding
         and the game embedding
         """
         super(Listener, self).__init__()
-        self.message_embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.lang_model = RNNEncoder(self.message_embedding)
+        self.use_discrete_comm = use_discrete_comm
 
         self.games_embedding =  nn.Sequential(
                                     nn.Linear(object_encoding_len, hidden_size),
@@ -59,33 +59,45 @@ class Listener(nn.Module):
                                     nn.Linear(hidden_size, embedding_dim)
                                 )
 
-        # self.lang_model will output something of size (batch_size, hidden_size) so 
-        # we need to project it to (batch_size, embedding_dim)
-        self.bilinear = nn.Linear(self.lang_model.hidden_size, embedding_dim, bias=False)
+        if use_discrete_comm:
+            message_embedding = nn.Embedding(vocab_size, embedding_dim)
+            self.lang_model = RNNEncoder(message_embedding)
+            # self.lang_model will output something of size (batch_size, hidden_size) so 
+            # we need to project it to (batch_size, embedding_dim)
+            self.bilinear = nn.Linear(self.lang_model.hidden_size, embedding_dim, bias=False)
 
-        self.debug_mlp = nn.Sequential(
+        else:
+            self.lang_mlp = nn.Sequential(
                             nn.Linear(vocab_size, hidden_size),
                             nn.ReLU(),
                             nn.Linear(hidden_size, embedding_dim)
                         )
-        self.debug_output2logits = nn.Linear(embedding_dim, 1)
 
     def forward(self, games, lang, lang_length):
+        """
+        Produce probability scores over objects in the listener context
+
+        Arguments:
+        games: torch.Tensor of size (batch_size, num_choices, object_encoding_len)
+        lang:
+            if use_discrete_comm: torch.Tensor of size (batch_size, max_message_len, vocab_size)
+            else: torch.Tensor of size (batch_size, vocab_size)
+        lang_length:
+            if use_discrete_comm: torch.Tensor of size (batch_size, )
+            else: None
+        """
+
         # Embed games
         games_emb = self.games_embedding(games.float()) # (batch_size, num_choices, embedding_dim)
-        #logits = self.debug_output2logits(games_emb).squeeze(-1)
-        #scores = F.softmax(logits, dim=1)
-        #return scores
-        
-        # Embed language
-        lang_emb = self.lang_model(lang, lang_length)   # (batch_size, hidden_size)
-        #lang_emb = self.debug_mlp(lang) # (batch_size, embedding_dim)
-        
-        # Bilinear term: lang embedding space to game embedding space
-        lang_bilinear = self.bilinear(lang_emb) # (batch_size, embedding_dim)
 
-        # Compute dot products
-        scores = torch.einsum('ijh,ih->ij', (games_emb, lang_bilinear))
-        #scores = torch.einsum('ijh,ih->ij', (games_emb, lang_emb))
+        if self.use_discrete_comm:
+            lang_emb = self.lang_model(lang, lang_length)   # (batch_size, hidden_size)
+
+            # Bilinear term: lang embedding space to game embedding space
+            lang_emb = self.bilinear(lang_emb) # (batch_size, embedding_dim)
         
-        return F.softmax(scores, dim=1)
+        else:
+            lang_emb = self.lang_mlp(lang) # (batch_size, embedding_dim)
+
+        scores = torch.einsum('ijh,ih->ij', (games_emb, lang_emb))
+        return F.log_softmax(scores, dim=1)

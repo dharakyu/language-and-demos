@@ -10,9 +10,10 @@ The speaker agent embeds the game state and the rewards matrix, and produces a m
 """
 
 class Speaker(nn.Module):
-    def __init__(self, object_encoding_len=6,
+    def __init__(self, object_encoding_len=6, num_objects=9,
                 embedding_dim=64, vocab_size=20, hidden_size=100, 
-                softmax_temp=1.0, max_message_len=4):
+                softmax_temp=1.0, max_message_len=4,
+                use_discrete_comm=True, view_listener_context=False):
         super().__init__()
         assert embedding_dim % 2 == 0, "input dim must be divisible by 2"
         self.embedding_dim = embedding_dim
@@ -21,63 +22,72 @@ class Speaker(nn.Module):
         self.hidden_size = hidden_size
         self.max_message_len = max_message_len
 
-        #self.games_embedding = nn.Linear(num_choices * object_encoding_len, self.embedding_dim // 2)
-        #self.reward_matrix_embedding = nn.Linear(num_objects * (object_encoding_len + 1), self.embedding_dim // 2)
+        self.use_discrete_comm = use_discrete_comm
+        self.view_listener_context = view_listener_context
 
-        self.init_h = nn.Linear(self.embedding_dim, self.hidden_size)
+        extension = 2 if view_listener_context else 1
 
-        self.onehot_embedding = nn.Linear(self.vocab_size, self.embedding_dim)
+        if use_discrete_comm:
+            self.reward_matrix_embedding = nn.Sequential(
+                                nn.Linear(object_encoding_len + extension, self.hidden_size),
+                                nn.ReLU(),
+                                nn.Linear(self.hidden_size, self.embedding_dim)
+                            )
 
-        self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
-        self.outputs2vocab = nn.Linear(self.hidden_size, self.vocab_size)
+            self.init_h = nn.Linear(self.embedding_dim * num_objects, self.hidden_size)
+            
+            self.onehot_embedding = nn.Linear(self.vocab_size, self.embedding_dim)
+            self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
+            self.outputs2vocab = nn.Linear(self.hidden_size, self.vocab_size)
 
-        #self.debug_mlp = nn.Linear(self.embedding_dim, self.vocab_size)
-        self.debug_mlp = nn.Sequential(
-                            nn.Linear(object_encoding_len+1, self.hidden_size),
+        else:
+            self.continuous_mlp = nn.Sequential(
+                            nn.Linear(object_encoding_len + extension, self.hidden_size),
                             nn.ReLU(),
                             nn.Linear(self.hidden_size, self.vocab_size)
                         )
 
-        self.reward_matrix_embedding = nn.Sequential(
-                                nn.Linear(object_encoding_len+1, self.hidden_size),
-                                nn.ReLU(),
-                                nn.Linear(self.hidden_size, self.embedding_dim)
-                            )
-        
-    def forward(self, reward_matrices, greedy=False):
+
+    def get_continuous_messages(self, reward_matrices):
         """
+        Get a continuous message representation of the reward matrix
+
         Arguments:
-        reward_matrices: torch.Tensor of size (batch_size, num_objects, object_encoding_length+2)
+        reward_matrices: torch.Tensor of size (batch_size, num_objects, object_encoding_length+extension)
 
         Return:
-        lang_tensor: torch.Tensor of size (batch_size, max_message_len)
-        lang_len: torch.Tensor of size (batch_size,)
+        messages: torch.Tensor of size (batch_size, vocab_size)
+        lang_len: None
         """
+        if not self.view_listener_context:
+            # trim the reward matrices such that the speaker can no longer see the listener context
+            reward_matrices = reward_matrices[:, :, :-1]
 
-        """
-        # trim the reward matrices such that the speaker can no longer see the listener context
-        # also need to change self.debug_mlp size
-        reward_matrices = reward_matrices[:, :, :-1]
-        
-        reward_embeddings = self.debug_mlp(reward_matrices)  # (batch_size, num_objects, vocab_size)
+        reward_embeddings = self.continuous_mlp(reward_matrices)  # (batch_size, num_objects, vocab_size)
         messages = reward_embeddings.sum(1)    # (batch_size, vocab_size)
 
         return messages, None
+
+    def get_discrete_messages(self, reward_matrices, greedy):
+        """
+        Produce a discrete message representation conditioned on the reward matrix embedding
+
+        Arguments:
+        reward_matrices: torch.Tensor of size (batch_size, num_objects, object_encoding_length+extension)
+        greedy: sample predicted tokens in a greedy fashion (i.e. not using Gumbel-Softmax)
+
+        Return:
+        lang_tensor: torch.Tensor of size (batch_size, max_message_len, vocab_size)
+        lang_len: torch
         """
         batch_size = reward_matrices.shape[0]
 
-        truncated_reward_matrices = []
-        for i in range(batch_size):
-            game = reward_matrices[i]
-            keep = game[:, -1] == 1
-            truncated = game[keep, :-1]
-            truncated_reward_matrices.append(truncated)
-        #breakpoint()
-        truncated_reward_matrices = torch.stack(truncated_reward_matrices)
-        
+        if not self.view_listener_context:
+            # trim listener context
+            reward_matrices = reward_matrices[:, :, :-1]
 
-        emb = self.reward_matrix_embedding(truncated_reward_matrices)  # (batch_size, num_objects, embedding_dim)
-        emb = emb.sum(1)    # (batch_size, embedding_dim)
+        emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
+        emb = emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)
 
         states = self.init_h(emb)
         states = states.unsqueeze(0)    # (1, batch_size, hidden_size)
@@ -166,3 +176,22 @@ class Speaker(nn.Module):
         lang_length = torch.Tensor(lang_length)
 
         return lang_tensor, lang_length
+
+    def forward(self, reward_matrices, greedy=False):
+        """
+        Arguments:
+        reward_matrices: torch.Tensor of size (batch_size, num_objects, object_encoding_length+2)
+
+        Return:
+        lang_tensor: 
+            if discrete: torch.Tensor of size (batch_size, max_message_len, vocab_size)
+            else: torch.Tensor of size (batch_size, vocab_size)
+        lang_len: 
+            if discrete: torch.Tensor of size (batch_size,)
+            else: None
+        """
+        if self.use_discrete_comm:
+            return self.get_discrete_messages(reward_matrices, greedy)
+        else:
+            return self.get_continuous_messages(reward_matrices)
+

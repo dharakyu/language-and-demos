@@ -1,4 +1,5 @@
 import numpy as np
+import itertools
 import torch
 
 class SimpleGame():
@@ -42,21 +43,26 @@ class SignalingBanditsGame():
     def __init__(self, num_choices=3, 
                     num_colors=3, num_shapes=3, 
                     max_color_val=2, max_shape_val=1,
+                    num_reward_matrices=36
                 ):
         self.num_choices = num_choices
         self.num_colors = num_colors
         self.num_shapes = num_shapes
+        self.num_reward_matrices = num_reward_matrices  # this is the number of reward matrices we 
 
-        self.color_utilities = np.linspace(start=-max_color_val, stop=max_color_val, num=num_colors)
-        self.shape_utilities = np.linspace(start=-max_shape_val, stop=max_shape_val, num=num_shapes)
+        color_utilities = np.linspace(start=-max_color_val, stop=max_color_val, num=num_colors)
+        shape_utilities = np.linspace(start=-max_shape_val, stop=max_shape_val, num=num_shapes)
 
-    def sample_reward_matrix(self, randomize_rewards=True):
+        color_orderings = list(itertools.permutations(color_utilities))
+        shape_orderings = list(itertools.permutations(shape_utilities))
+        self.possible_reward_assigments = list(itertools.product(color_orderings, shape_orderings))
+
+    def sample_reward_matrix(self):
         """
         Generate the reward matrix, to which the speaker will gain access
 
         Arguments:
-        randomize_rewards: True if the utility associated with a particular feature is randomized for each game
-            default is [-2, 0, 2] for colors and [-1, 0, 1] for shapes
+        None
 
         Return:
         reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 2)
@@ -67,48 +73,33 @@ class SignalingBanditsGame():
         i.e. if the item described by the feature [0, 1, 0, 1, 0, 0] has utility 3 and is present in the listener's
         context, then the corresponding row in reward_matrix is [0, 1, 0, 1, 0, 0, 3, 1]
         """
-        if randomize_rewards:
-            flip = np.random.randint(0, 3)
-            if flip == 1:
-                self.color_utilities = [2, 0, -2]
-            elif flip == 2:
-                self.color_utilities = [0, 2, -2]
-            else:
-                self.color_utilities = [-2, 0, 2]
-        #    np.random.shuffle(self.color_utilities)
-        #    np.random.shuffle(self.shape_utilities)
-            #breakpoint()
-        #    if np.random.randint(0, 2):
-        #        self.color_utilities = np.flip(self.color_utilities)
+        # determines the reward configuration we are using
+        reward_assignment_idx = np.random.randint(0, self.num_reward_matrices)
+        reward_assignment = self.possible_reward_assigments[reward_assignment_idx]
+        color_utilities, shape_utilities = reward_assignment
 
-            #if np.random.randint(0, 2):
-            #    self.shape_utilities = np.flip(self.shape_utilities)
-
+        # determines objects that appear in the listener context
         indices = np.random.choice(self.num_colors*self.num_shapes, size=self.num_choices, replace=False)
-        #indices = [1, 4, 8]
+        
         curr_idx = 0
         reward_matrix = []
         for i in range(self.num_colors):
             for j in range(self.num_shapes):
                 color_embedding = np.zeros(shape=(self.num_colors,))
                 color_embedding[i] = 1
-                color_utility = self.color_utilities[i]
+                color_utility = color_utilities[i]
 
                 shape_embedding = np.zeros(shape=(self.num_shapes,))
                 shape_embedding[j] = 1
-                shape_utility = self.shape_utilities[j]
+                shape_utility = shape_utilities[j]
 
                 embedding = np.concatenate((color_embedding, shape_embedding))
-
                 in_listener_context = int(curr_idx in indices)
-                #breakpoint()
                 embedding = np.append(embedding, [color_utility+shape_utility, in_listener_context])
                 reward_matrix.append(embedding)
 
                 curr_idx += 1
-        #reward_matrix = np.array(reward_matrix)
-        #keep = np.where(reward_matrix[:, -1] == 1)
-        #return reward_matrix[keep, :]
+
         return np.array(reward_matrix)
 
     def get_listener_view(self, reward_matrix):
@@ -141,7 +132,7 @@ class SignalingBanditsGame():
         for i in range(batch_size):
             reward_matrix = self.sample_reward_matrix()
             listener_view = self.get_listener_view(reward_matrix)
-            
+   
             batch_reward_matrices.append(reward_matrix)
             batch_listener_views.append(listener_view)
         
@@ -160,7 +151,7 @@ class SignalingBanditsGame():
 
         return object_rewards
 
-    def compute_rewards(self, choices, listener_views, reward_matrices):
+    def compute_rewards(self, listener_views, reward_matrices):
         """
         Given a batch of games and model predictions, compute the rewards
 
@@ -174,7 +165,7 @@ class SignalingBanditsGame():
         """
         batch_size = listener_views.shape[0]
         batch_rewards = []
-        #breakpoint()
+
         for i in range(batch_size):
             listener_view = listener_views[i]
             reward_matrix = reward_matrices[i]
