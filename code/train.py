@@ -30,7 +30,7 @@ def run_epoch(split, game, speaker, listener, optimizer, args):
         preds = torch.argmax(scores, dim=-1)    # (batch_size)
 
         # get the rewards associated with the objects in each game
-        game_rewards = game.compute_rewards(preds, listener_views, reward_matrices)  # (batch_size, num_choices)
+        game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
 
         # what reward did the model actually earn
         model_rewards = game_rewards.gather(-1, preds.unsqueeze(-1))
@@ -72,8 +72,8 @@ def run_epoch(split, game, speaker, listener, optimizer, args):
 
 def main():
     args = get_args()
-    s = Speaker()
-    l = Listener()
+    s = Speaker(hidden_size=args.hidden_size)
+    l = Listener(hidden_size=args.hidden_size)
 
     optimizer = optim.Adam(list(s.parameters()) +
                            list(l.parameters()),
@@ -84,7 +84,7 @@ def main():
 
     if args.wandb:
         import wandb
-        wandb.init(args.wandb_project_name, config=args)
+        wandb.init(args.wandb_project_name, group=args.group, config=args)
 
         if args.name is not None:
             wandb.run.name = args.name

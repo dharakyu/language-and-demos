@@ -55,7 +55,10 @@ class SignalingBanditsGame():
 
         color_orderings = list(itertools.permutations(color_utilities))
         shape_orderings = list(itertools.permutations(shape_utilities))
-        self.possible_reward_assigments = list(itertools.product(color_orderings, shape_orderings))
+
+        possible_idx = np.linspace(0, 35, num=num_reward_matrices, dtype=int)
+        all_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
+        self.possible_reward_assignments = [all_reward_assignments[idx] for idx in possible_idx]  # size (num_reward_matrices)
 
     def sample_reward_matrix(self):
         """
@@ -75,7 +78,7 @@ class SignalingBanditsGame():
         """
         # determines the reward configuration we are using
         reward_assignment_idx = np.random.randint(0, self.num_reward_matrices)
-        reward_assignment = self.possible_reward_assigments[reward_assignment_idx]
+        reward_assignment = self.possible_reward_assignments[reward_assignment_idx]
         color_utilities, shape_utilities = reward_assignment
 
         # determines objects that appear in the listener context

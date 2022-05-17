@@ -11,7 +11,7 @@ The speaker agent embeds the game state and the rewards matrix, and produces a m
 
 class Speaker(nn.Module):
     def __init__(self, object_encoding_len=6, num_objects=9,
-                embedding_dim=64, vocab_size=20, hidden_size=100, 
+                embedding_dim=64, vocab_size=40, hidden_size=100, 
                 softmax_temp=1.0, max_message_len=4,
                 use_discrete_comm=True, view_listener_context=False):
         super().__init__()
@@ -39,6 +39,7 @@ class Speaker(nn.Module):
             self.onehot_embedding = nn.Linear(self.vocab_size, self.embedding_dim)
             self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
             self.outputs2vocab = nn.Linear(self.hidden_size, self.vocab_size)
+            self.hidden_states_embedding = nn.Linear(1, 2)
 
         else:
             self.continuous_mlp = nn.Sequential(
@@ -101,7 +102,7 @@ class Speaker(nn.Module):
         
         # first input is SOS token
         # (batch_size, n_vocab)
-        inputs_onehot = torch.zeros(batch_size, self.vocab_size)    # may need to move to the GPU
+        inputs_onehot = torch.zeros(batch_size, self.vocab_size)
         inputs_onehot[:, data.SOS_IDX] = 1.0
 
         # (batch_size, len, n_vocab)

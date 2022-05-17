@@ -44,7 +44,7 @@ class RNNEncoder(nn.Module):
 
 class Listener(nn.Module):
     def __init__(self, object_encoding_len=6, 
-                embedding_dim=64, vocab_size=20, hidden_size=100,
+                embedding_dim=64, vocab_size=40, hidden_size=100,
                 use_discrete_comm=True):
         """
         Note: embedding_dim is used as the embedding size for both the message embedding
@@ -61,7 +61,7 @@ class Listener(nn.Module):
 
         if use_discrete_comm:
             message_embedding = nn.Embedding(vocab_size, embedding_dim)
-            self.lang_model = RNNEncoder(message_embedding)
+            self.lang_model = RNNEncoder(message_embedding, hidden_size)
             # self.lang_model will output something of size (batch_size, hidden_size) so 
             # we need to project it to (batch_size, embedding_dim)
             self.bilinear = nn.Linear(self.lang_model.hidden_size, embedding_dim, bias=False)
