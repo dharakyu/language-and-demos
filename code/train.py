@@ -2,6 +2,7 @@ from speaker import Speaker
 from listener import Listener
 from game import SignalingBanditsGame
 from arguments import get_args
+from agent import Agent
 
 import torch
 import torch.optim as optim
@@ -11,7 +12,7 @@ import numpy as np
 from statistics import mean
 from collections import defaultdict
 
-def run_epoch(split, game, speaker, listener, optimizer, args):
+def run_epoch(split, game, agent_0, agent_1, optimizer, args):
     training = split == 'train'
     batch_rewards = []
     batch_losses = []
@@ -22,12 +23,20 @@ def run_epoch(split, game, speaker, listener, optimizer, args):
         listener_views = torch.from_numpy(listener_views).float()
         reward_matrices = torch.from_numpy(reward_matrices).float()
 
-        messages, message_lens = speaker(reward_matrices)
+        lang_0, lang_len_0, scores_0 = agent_0(reward_matrices=reward_matrices,
+                                                input_lang=None,
+                                                input_lang_len=None,
+                                                games=listener_views
+                                            )
         
-        scores = listener(listener_views, messages, message_lens)
+        lang_1, lang_len_1, scores_1 = agent_1(reward_matrices=reward_matrices,
+                                                input_lang=lang_0,
+                                                input_lang_len=lang_len_0,
+                                                games=listener_views
+                                            )
         
         # get the listener predictions
-        preds = torch.argmax(scores, dim=-1)    # (batch_size)
+        preds = torch.argmax(scores_1, dim=-1)    # (batch_size)
 
         # get the rewards associated with the objects in each game
         game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
@@ -44,7 +53,7 @@ def run_epoch(split, game, speaker, listener, optimizer, args):
         accuracy = (argmax_rewards == preds).float().mean().item()
 
         # multiply by -1 bc we are maximizing the expected reward which means minimizing the negative of that
-        losses = -1 * torch.bmm(scores.exp().unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
+        losses = -1 * torch.bmm(scores_1.exp().unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
         loss = losses.mean()
 
         if training:
@@ -72,11 +81,11 @@ def run_epoch(split, game, speaker, listener, optimizer, args):
 
 def main():
     args = get_args()
-    s = Speaker(hidden_size=args.hidden_size)
-    l = Listener(hidden_size=args.hidden_size)
+    agent_0 = Agent(hidden_size=args.hidden_size)
+    agent_1 = Agent(hidden_size=args.hidden_size)
 
-    optimizer = optim.Adam(list(s.parameters()) +
-                           list(l.parameters()),
+    optimizer = optim.Adam(list(agent_0.parameters()) +
+                           list(agent_1.parameters()),
                            lr=args.lr)
     
     metrics = defaultdict(list)
@@ -94,8 +103,8 @@ def main():
     for i in range(args.epochs):
         print('epoch', i)
         
-        train_metrics = run_epoch('train', game, s, l, optimizer, args)
-        val_metrics = run_epoch('val', game, s, l, optimizer, args)
+        train_metrics = run_epoch('train', game, agent_0, agent_1, optimizer, args)
+        val_metrics = run_epoch('val', game, agent_0, agent_1, optimizer, args)
 
         for metric, value in train_metrics.items():
             metrics['train_{}'.format(metric)] = value
