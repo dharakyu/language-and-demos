@@ -5,6 +5,7 @@ from arguments import get_args
 from agent import Agent
 
 import torch
+import torch.nn as nn
 import torch.optim as optim
 
 import numpy as np
@@ -12,7 +13,18 @@ import numpy as np
 from statistics import mean
 from collections import defaultdict
 
-def run_epoch(split, game, agent_0, agent_1, optimizer, args):
+def run_epoch(split, game, agents, optimizer, args):
+    """
+    Arguments:
+    split: string
+    game: np.array of size (batch_size, num_choices, object_encoding_len)
+    agents: list of Agent objects
+    optimizer: PyTorch optimizer object
+    args: 
+
+    Return:
+    metrics: dict
+    """
     training = split == 'train'
     batch_rewards = []
     batch_losses = []
@@ -23,20 +35,18 @@ def run_epoch(split, game, agent_0, agent_1, optimizer, args):
         listener_views = torch.from_numpy(listener_views).float()
         reward_matrices = torch.from_numpy(reward_matrices).float()
 
-        lang_0, lang_len_0, scores_0 = agent_0(reward_matrices=reward_matrices,
-                                                input_lang=None,
-                                                input_lang_len=None,
-                                                games=listener_views
-                                            )
-        
-        lang_1, lang_len_1, scores_1 = agent_1(reward_matrices=reward_matrices,
-                                                input_lang=lang_0,
-                                                input_lang_len=lang_len_0,
-                                                games=listener_views
-                                            )
+        lang_i = None
+        lang_len_i = None
+        for i in range(args.chain_length):
+            agent_i = agents[i]
+            lang_i, lang_len_i, scores_i = agent_i(reward_matrices=reward_matrices,
+                                                    input_lang=lang_i,
+                                                    input_lang_len=lang_len_i,
+                                                    games=listener_views
+                                                )
         
         # get the listener predictions
-        preds = torch.argmax(scores_1, dim=-1)    # (batch_size)
+        preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
 
         # get the rewards associated with the objects in each game
         game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
@@ -53,7 +63,7 @@ def run_epoch(split, game, agent_0, agent_1, optimizer, args):
         accuracy = (argmax_rewards == preds).float().mean().item()
 
         # multiply by -1 bc we are maximizing the expected reward which means minimizing the negative of that
-        losses = -1 * torch.bmm(scores_1.exp().unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
+        losses = -1 * torch.bmm(scores_i.exp().unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
         loss = losses.mean()
 
         if training:
@@ -81,11 +91,9 @@ def run_epoch(split, game, agent_0, agent_1, optimizer, args):
 
 def main():
     args = get_args()
-    agent_0 = Agent(hidden_size=args.hidden_size)
-    agent_1 = Agent(hidden_size=args.hidden_size)
-
-    optimizer = optim.Adam(list(agent_0.parameters()) +
-                           list(agent_1.parameters()),
+    
+    agents = nn.ModuleList([Agent(hidden_size=args.hidden_size) for _ in range(args.chain_length)])
+    optimizer = optim.Adam(agents.parameters(),
                            lr=args.lr)
     
     metrics = defaultdict(list)
@@ -93,7 +101,10 @@ def main():
 
     if args.wandb:
         import wandb
-        wandb.init(args.wandb_project_name, group=args.group, config=args)
+        if args.group is not None:
+            wandb.init(args.wandb_project_name, group=args.group, config=args)
+        else:
+            wandb.init(args.wandb_project_name, config=args)
 
         if args.name is not None:
             wandb.run.name = args.name
@@ -103,8 +114,8 @@ def main():
     for i in range(args.epochs):
         print('epoch', i)
         
-        train_metrics = run_epoch('train', game, agent_0, agent_1, optimizer, args)
-        val_metrics = run_epoch('val', game, agent_0, agent_1, optimizer, args)
+        train_metrics = run_epoch('train', game, agents, optimizer, args)
+        val_metrics = run_epoch('val', game, agents, optimizer, args)
 
         for metric, value in train_metrics.items():
             metrics['train_{}'.format(metric)] = value

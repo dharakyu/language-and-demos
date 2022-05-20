@@ -24,5 +24,7 @@ def get_args():
     parser.add_argument('--embedding_size', default=64, type=int)
     parser.add_argument('--hidden_size', default=100, type=int)
 
+    parser.add_argument('--chain_length', default=2, type=int)
+
     args = parser.parse_args()
     return args
