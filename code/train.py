@@ -26,14 +26,17 @@ def run_epoch(split, game, agents, optimizer, args):
     metrics: dict
     """
     training = split == 'train'
-    batch_rewards = []
-    batch_losses = []
-    batch_accuracy = []
 
-    for _ in range(args.num_batches_per_epoch):
-        reward_matrices, listener_views = game.sample_batch()
-        listener_views = torch.from_numpy(listener_views).float()
-        reward_matrices = torch.from_numpy(reward_matrices).float()
+    batch_rewards_after_agent_i = [[] for _ in range(args.chain_length)]
+    batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
+    batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
+    
+    for batch_idx in range(args.num_batches_per_epoch):
+        reward_matrices, listener_views = game.sample_batch(num_listener_views=args.num_listener_views)
+        
+        if torch.cuda.is_available():
+            reward_matrices = torch.from_numpy(reward_matrices).float().cuda()
+            listener_views = torch.from_numpy(listener_views).float().cuda()
 
         lang_i = None
         lang_len_i = None
@@ -44,48 +47,62 @@ def run_epoch(split, game, agents, optimizer, args):
                                                     input_lang_len=lang_len_i,
                                                     games=listener_views
                                                 )
+            if torch.cuda.is_available():
+                lang_i = lang_i.cuda()
+                lang_len_i = lang_len_i.cuda()
         
-        # get the listener predictions
-        preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
+            if i != 0:
+                # get the listener predictions
+                preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
 
-        # get the rewards associated with the objects in each game
-        game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
+                # get the rewards associated with the objects in each game
+                game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
+                # move to GPU if necessary
+                game_rewards = game_rewards.to(reward_matrices.device)
 
-        # what reward did the model actually earn
-        model_rewards = game_rewards.gather(-1, preds.unsqueeze(-1))
+                # what reward did the model actually earn
+                model_rewards = game_rewards.gather(-1, preds.unsqueeze(-1))
 
-        # what is the maximum reward and the associated index
-        max_rewards, argmax_rewards = game_rewards.max(-1)
+                # what is the maximum reward and the associated index
+                max_rewards, argmax_rewards = game_rewards.max(-1)
 
-        avg_reward = model_rewards.squeeze(-1).mean().item()
-        avg_max_reward = max_rewards.mean().item()
+                avg_reward = model_rewards.squeeze(-1).mean().item()
+                avg_max_reward = max_rewards.mean().item()
 
-        accuracy = (argmax_rewards == preds).float().mean().item()
+                accuracy = (argmax_rewards == preds).float().mean().item()
 
-        # multiply by -1 bc we are maximizing the expected reward which means minimizing the negative of that
-        losses = -1 * torch.bmm(scores_i.exp().unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
-        loss = losses.mean()
+                # multiply by -1 bc we are maximizing the expected reward which means minimizing the negative of that
+                #losses = -1 * torch.bmm(scores_i.exp().unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
 
-        if training:
+                losses = -1 * torch.einsum('bvc,bvc->bv',(scores_i.exp(), game_rewards))    # size (batch_size, num_views)
+                loss = losses.mean()    # take the mean over all views and each reward matrix in the batch
+
+                batch_rewards_after_agent_i[i].append(avg_reward / avg_max_reward)
+                batch_losses_after_agent_i[i].append(loss.item())
+                batch_accuracy_after_agent_i[i].append(accuracy)
+
+            else:
+                batch_rewards_after_agent_i[i].append(None)
+                batch_losses_after_agent_i[i].append(None)
+                batch_accuracy_after_agent_i[i].append(None)
+
+        if training:    # only use the loss from the last agent, from the last batch we saw
             loss.backward()
             optimizer.step()
-
-        batch_rewards.append(avg_reward / avg_max_reward)
-        batch_losses.append(loss.item())
-        batch_accuracy.append(accuracy)
     
     print(split)
-    print('avg reward', mean(batch_rewards))
-    print('train loss', mean(batch_losses))
-    print('accuracy', mean(batch_accuracy))
-    print('predictions', preds.float().mean().item())
+    for i in range(1, args.chain_length):
+        print('metrics after passing through agent', i)
+        print('avg reward', mean(batch_rewards_after_agent_i[i]))
+        print('train loss', mean(batch_losses_after_agent_i[i]))
+        print('accuracy', mean(batch_accuracy_after_agent_i[i]))
+        #print('predictions', preds.float().mean().item())
     
-    metrics = {
-        'reward': mean(batch_rewards),
-        'loss': mean(batch_losses),
-        'accuracy': mean(batch_accuracy),
-        'prediction_index': preds.float().mean().item()
-    }
+    metrics = {}
+    for i in range(1, args.chain_length):
+        metrics['reward_' + str(i)] = mean(batch_rewards_after_agent_i[i])
+        metrics['loss_' + str(i)] = mean(batch_losses_after_agent_i[i])
+        metrics['accuracy_' + str(i)] = mean(batch_accuracy_after_agent_i[i])
 
     return metrics
 
@@ -93,6 +110,9 @@ def main():
     args = get_args()
     
     agents = nn.ModuleList([Agent(hidden_size=args.hidden_size) for _ in range(args.chain_length)])
+    if torch.cuda.is_available:
+        agents = nn.ModuleList([agent.cuda() for agent in agents])
+
     optimizer = optim.Adam(agents.parameters(),
                            lr=args.lr)
     
@@ -129,4 +149,5 @@ def main():
             wandb.log(metrics)
         
         
-main()
+if __name__ == "__main__":
+    main()

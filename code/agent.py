@@ -107,12 +107,12 @@ class Agent(nn.Module):
         lang = []
         # Keep track of message length and whether we've finished sampling
         #lang_length = torch.ones(batch_size, dtype=torch.int64).to(feats.device)
-        lang_length = [1 for _ in range(batch_size)]
+        lang_length = torch.ones(batch_size, dtype=torch.int64).to(reward_matrices.device)
         done_sampling = [False for _ in range(batch_size)]
         
         # first input is SOS token
         # (batch_size, n_vocab)
-        inputs_onehot = torch.zeros(batch_size, self.vocab_size)
+        inputs_onehot = torch.zeros(batch_size, self.vocab_size).to(reward_matrices.device)
         inputs_onehot[:, data.SOS_IDX] = 1.0
 
         # (batch_size, len, n_vocab)
@@ -167,7 +167,7 @@ class Agent(nn.Module):
             inputs = self.onehot_embedding(predicted_onehot.unsqueeze(0))
 
         # Add EOS if we've never sampled it
-        eos_onehot = torch.zeros(batch_size, 1, self.vocab_size)    # may need to move to device
+        eos_onehot = torch.zeros(batch_size, 1, self.vocab_size).to(reward_matrices.device)
         eos_onehot[:, 0, data.EOS_IDX] = 1.0
         lang.append(eos_onehot)
         # Cut off the rest of the sentences
@@ -184,7 +184,7 @@ class Agent(nn.Module):
         lang_tensor = lang_tensor[:, :max_lang_len, :]
 
         # convert lang_length from a list to a Tensor
-        lang_length = torch.Tensor(lang_length)
+        #lang_length = torch.Tensor(lang_length)
 
         return lang_tensor, lang_length
 
@@ -206,7 +206,7 @@ class Agent(nn.Module):
         input_lang_length:
             if use_discrete_comm: torch.Tensor of size (batch_size, )
             else: None
-        games: torch.Tensor of size (batch_size, num_choices, object_encoding_len)
+        games: torch.Tensor of size (batch_size, num_views, num_choices, object_encoding_len)
         greedy: Boolean determining message sampling strategy
 
         Return:
@@ -216,29 +216,36 @@ class Agent(nn.Module):
         output_lang_len:
             if use_discrete_comm: torch.Tensor of size (batch_size, )
             else: None
-        scores: torch.Tensor of size (batch_size, num_choices)
+        scores: torch.Tensor of size (batch_size, num_views, num_choices)
 
         """
 
         # 1. produce messages
+        
         if self.use_discrete_comm:
             output_lang, output_lang_len = self.get_discrete_messages(reward_matrices, greedy)
         else:
             output_lang, output_lang_len = self.get_continuous_messages(reward_matrices)
 
         # 2. produce scores over outputs
+        #if torch.cuda.is_available():
+        #    input_lang = input_lang.cuda()
+        #    input_lang_len = input_lang_len.cuda()
+
         if input_lang is not None:
-            games_emb = self.games_embedding(games.float()) # (batch_size, num_choices, embedding_dim)
+            
+            games_emb = self.games_embedding(games.float()) # (batch_size, num_views, num_choices, embedding_dim)
 
             if self.use_discrete_comm:
-                lang_emb = self.lang_model(input_lang, input_lang_len)   # (batch_size, hidden_size)
-                lang_emb = self.bilinear(lang_emb) # (batch_size, embedding_dim)
+                lang_emb = self.lang_model(input_lang, input_lang_len)   # (batch_size, num_views, hidden_size)
+                lang_emb = self.bilinear(lang_emb) # (batch_size, num_views, embedding_dim)
             
             else:
-                lang_emb = self.lang_mlp(input_lang) # (batch_size, embedding_dim)
+                lang_emb = self.lang_mlp(input_lang) # (batch_size, num_views, embedding_dim)
 
-            scores = torch.einsum('ijh,ih->ij', (games_emb, lang_emb))
-            scores = F.log_softmax(scores, dim=1)
+            #breakpoint()
+            scores = torch.einsum('bvce,be->bvc', (games_emb, lang_emb))    # (batch_size, num_views, num_choices)
+            scores = F.log_softmax(scores, dim=-1)
         else:
             # simplification for now: don't produce scores for the first agent
             # eventually, I will want to produce an embedding that is the concatanation
