@@ -1,6 +1,7 @@
 import numpy as np
 import itertools
 import torch
+import time
 
 class SimpleGame():
     def __init__(self, num_choices=3):
@@ -60,6 +61,12 @@ class SignalingBanditsGame():
         all_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
         self.possible_reward_assignments = [all_reward_assignments[idx] for idx in possible_idx]  # size (num_reward_matrices)
 
+        num_objects = num_colors * num_shapes 
+        self.combinations = list(itertools.combinations(range(num_objects), r=num_choices))
+        #breakpoint()
+        orderings_for_single_feature = set(itertools.permutations([1 if i==num_choices-1 else 0 for i in range(num_choices)], r=num_choices))
+        self.all_feature_arrangements = list(itertools.product(orderings_for_single_feature, orderings_for_single_feature))
+
     def sample_reward_matrix(self):
         """
         Generate the reward matrix, to which the speaker will gain access
@@ -84,6 +91,9 @@ class SignalingBanditsGame():
         # determines objects that appear in the listener context
         indices = np.random.choice(self.num_colors*self.num_shapes, size=self.num_choices, replace=False)
         
+        #breakpoint()
+        '''
+        start = time.time()
         curr_idx = 0
         reward_matrix = []
         for i in range(self.num_colors):
@@ -102,7 +112,30 @@ class SignalingBanditsGame():
                 reward_matrix.append(embedding)
 
                 curr_idx += 1
+        #breakpoint()
+        end = time.time()
+        print('first method:', end-start)
+        '''
 
+        start = time.time()
+        reward_matrix = []
+        #orderings = 
+        #breakpoint()
+        for i in range(self.num_colors * self.num_shapes):
+            obj = self.all_feature_arrangements[i]
+            color_idx = obj[0].index(1)
+            color_utility = color_utilities[color_idx]
+            shape_idx = obj[1].index(1)
+            shape_utility = shape_utilities[shape_idx]
+            in_listener_context = int(i in indices)
+            embedding = np.concatenate((obj[0], obj[1]))
+            embedding = np.append(embedding, [color_utility+shape_utility, in_listener_context])
+            reward_matrix.append(embedding)
+            
+            #color_utility = color_utilities[]
+        end = time.time()
+        #print('second method:', end-start)
+        #breakpoint()
         return np.array(reward_matrix)
 
     def get_listener_view(self, reward_matrix):
@@ -132,13 +165,12 @@ class SignalingBanditsGame():
         Return:
         listener_views: np.array of size (num_combinations, num_choices, self.num_colors + self.num_shapes)
         """
-        num_objects = self.num_colors * self.num_shapes
-        combinations = list(itertools.combinations(range(num_objects), r=self.num_choices))
-        indices_of_combinations = np.random.choice(a=len(combinations), size=num_views, replace=False)
+        
+        indices_of_combinations = np.random.choice(a=len(self.combinations), size=num_views, replace=False)
 
         listener_views = []
         for idx in indices_of_combinations:
-            combo = combinations[idx]
+            combo = self.combinations[idx]
             view = reward_matrix[combo, :-2] # lop off the last two elements
             listener_views.append(view)
             
@@ -173,11 +205,10 @@ class SignalingBanditsGame():
 
         for i in range(self.num_choices):
             curr_obj = listener_view[i]
-            for j in range(self.num_colors*self.num_shapes):
-                if torch.equal(curr_obj, reward_matrix[j, :-2]):
-                    reward = reward_matrix[j, -2]
-                    object_rewards.append(reward)
-                    break
+            indices_of_one = torch.where(curr_obj == 1)[0]
+            corresponding_idx = (indices_of_one[0]*self.num_choices) + (indices_of_one[1]-self.num_choices)
+            reward = reward_matrix[corresponding_idx.item(), -2]
+            object_rewards.append(reward)
 
         return object_rewards
 
