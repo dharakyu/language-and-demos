@@ -117,10 +117,8 @@ class SignalingBanditsGame():
         print('first method:', end-start)
         '''
 
-        start = time.time()
         reward_matrix = []
-        #orderings = 
-        #breakpoint()
+        
         for i in range(self.num_colors * self.num_shapes):
             obj = self.all_feature_arrangements[i]
             color_idx = obj[0].index(1)
@@ -132,10 +130,6 @@ class SignalingBanditsGame():
             embedding = np.append(embedding, [color_utility+shape_utility, in_listener_context])
             reward_matrix.append(embedding)
             
-            #color_utility = color_utilities[]
-        end = time.time()
-        #print('second method:', end-start)
-        #breakpoint()
         return np.array(reward_matrix)
 
     def get_listener_view(self, reward_matrix):
@@ -240,6 +234,42 @@ class SignalingBanditsGame():
             batch_rewards.append(game_rewards)
  
         return torch.Tensor(batch_rewards)
+
+    def generate_masked_reward_matrix_views(self, reward_matrices, num_views):
+        """
+        For a batch of reward matrices, produce partial views
+
+        Arguments:
+        reward_matrices: np.array of size (batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
+        num_views: int representing the number of partial views to generate (should be num_agents - 1)
+
+        Return:
+        reward_matrix_views: np.array of size (num_views, batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
+        """
+
+        # generate masks
+        batch_size = reward_matrices.shape[0]
+        batch_masks = []
+    
+        for _ in range(batch_size):
+            shuffled_indices = np.arange(start=0, stop=reward_matrices.shape[1], dtype=int)
+            np.random.shuffle(shuffled_indices)
+            
+            splits = np.array_split(shuffled_indices, num_views)
+            masks = []
+            for split in splits:
+                mask = list(set(range(reward_matrices.shape[1])) - set(split))
+                masks.append(mask)
+            batch_masks.append(masks)
+
+        # apply masks to reward matrices (only to the first n-1 agents)
+        reward_matrices_views = torch.stack([reward_matrices for _ in range(num_views)])
+        for sample_idx in range(batch_size):
+            for agent_idx in range(num_views):
+                mask = batch_masks[sample_idx][agent_idx]
+                reward_matrices_views[agent_idx, sample_idx, mask, :] = 0
+
+        return reward_matrices_views
             
 
             
