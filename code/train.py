@@ -14,7 +14,7 @@ from statistics import mean
 from collections import defaultdict
 import time
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 def run_epoch(dataset_split, game, agents, optimizer, args):
     """
@@ -69,7 +69,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
             if args.cuda:
                 lang_i = lang_i.cuda()
-                lang_len_i = lang_len_i.cuda()
+                if args.discrete_comm: lang_len_i = lang_len_i.cuda()
 
             # get the listener predictions
             preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
@@ -103,6 +103,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             losses_for_curr_batch.append(loss)
 
         if training:    # use the losses from all the agents
+            #breakpoint()
             loss_across_agents = torch.mean(torch.stack(losses_for_curr_batch))
             loss_across_agents.backward()
             optimizer.step()
@@ -125,11 +126,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
 def main():
     args = get_args()
-    agent = Agent(hidden_size=args.hidden_size)
+    
     if args.use_same_agent:
+        agent = Agent(hidden_size=args.hidden_size,
+                        use_discrete_comm=args.discrete_comm)
         agents = nn.ModuleList([agent for _ in range(args.chain_length)])
     else:
-        agents = nn.ModuleList([Agent(hidden_size=args.hidden_size) for _ in range(args.chain_length)])
+        agents = nn.ModuleList([Agent(hidden_size=args.hidden_size,
+                                    use_discrete_comm=args.discrete_comm) 
+                                for _ in range(args.chain_length)])
 
     if args.cuda:
         agents = nn.ModuleList([agent.cuda() for agent in agents])
@@ -157,7 +162,7 @@ def main():
         start = time.time()
         train_metrics = run_epoch('train', game, agents, optimizer, args)
         val_metrics = run_epoch('val', game, agents, optimizer, args)
-
+        #breakpoint()
         for metric, value in train_metrics.items():
             metrics['train_{}'.format(metric)] = value
 
