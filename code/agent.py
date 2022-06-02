@@ -37,7 +37,10 @@ class Agent(nn.Module):
                                             nn.ReLU(),
                                             nn.Linear(hidden_size, embedding_dim)
                                         )
-        self.input_message_embedding = nn.Linear(max_message_len * vocab_size, max_message_len * vocab_size)
+        self.input_message_embedding = nn.Linear(max_message_len * vocab_size, 
+                                                    max_message_len * vocab_size)
+        self.reduce_reward_matrix_and_input_message = nn.Linear(embedding_dim * num_objects + max_message_len * vocab_size,
+                                                                embedding_dim)
 
         if use_discrete_comm:
             # for producing a message
@@ -90,11 +93,8 @@ class Agent(nn.Module):
 
         game_emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
         game_emb = game_emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)
-        #breakpoint()
 
-        #if input_message is None:   # handles the case for the first agent in the chain
-        #    input_message = torch.zeros(size=(batch_size, self.max_message_len, self.vocab_size))
-        assert input_message.shape == (32, 4, 40)
+        # TODO: add assert statement to make sure the message is the right size (mostly for discrete setting)
         input_message_reshaped = input_message.view(batch_size, -1) # (batch_size, max_message_len * vocab_size)
         input_message_reshaped = input_message_reshaped.to(reward_matrices.device)
         input_message_emb = self.input_message_embedding(input_message_reshaped) # (batch_size, max_message_len * vocab_size)
@@ -114,12 +114,9 @@ class Agent(nn.Module):
         lang_len: None
         """
 
-        #reward_embeddings = self.continuous_mlp(reward_matrices)  # (batch_size, num_objects, vocab_size)
         batch_size = emb.shape[0]
         reshaped_emb = emb.view(batch_size, self.max_message_len, -1)   # (batch_size, max_message_len, -1)
-        #breakpoint()
         messages = self.cont_comm_message_mlp(reshaped_emb)  # (batch_size, vocab_size)
-        #messages = reward_embeddings.sum(1)    # (batch_size, vocab_size)
 
         return messages, None
 
@@ -262,7 +259,7 @@ class Agent(nn.Module):
         if input_lang is None:  # create a null message
             input_lang = torch.zeros(size=(batch_size, self.max_message_len, self.vocab_size)).to(reward_matrices.device)
             input_lang_len = torch.full(size=(batch_size,), fill_value=self.max_message_len).to(reward_matrices.device)
-
+        
         # 1. produce messages
         reward_matrix_and_input_message_emb = self.embed_reward_matrix_and_input_message(reward_matrices, input_lang)
         if self.use_discrete_comm:
@@ -273,15 +270,8 @@ class Agent(nn.Module):
         # 2. produce scores over outputs
         listener_context_emb = self.games_embedding(games.float()) # (batch_size, num_views, num_choices, embedding_dim)
 
-        if self.use_discrete_comm:
-            lang_emb = self.lang_model(input_lang, input_lang_len)   # (batch_size, hidden_size)
-            lang_emb = self.bilinear(lang_emb) # (batch_size, embedding_dim)
-            
-        else:
-            reshaped_input_lang = input_lang.view(batch_size, -1)   # (batch_size, max_message_len * vocab_size)
-            lang_emb = self.cont_comm_lang_model_mlp(reshaped_input_lang) # (batch_size, embedding_dim)
-        breakpoint()
-        scores = torch.einsum('bvce,be->bvc', (listener_context_emb, lang_emb))    # (batch_size, num_views, num_choices)
+        reduced_reward_matrix_and_input_message_emb = self.reduce_reward_matrix_and_input_message(reward_matrix_and_input_message_emb)
+        scores = torch.einsum('bvce,be->bvc', (listener_context_emb, reduced_reward_matrix_and_input_message_emb))  # (batch_size, num_views, num_choices)
         scores = F.log_softmax(scores, dim=-1)
 
         return output_lang, output_lang_len, scores

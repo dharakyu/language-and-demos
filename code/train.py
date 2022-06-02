@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 import numpy as np
+import pandas as pd
 
 from statistics import mean
 from collections import defaultdict
@@ -33,17 +34,31 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_rewards_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
-    
-    for batch_idx in range(args.num_batches_per_epoch):
-        reward_matrices, listener_views = game.sample_batch(num_listener_views=args.num_listener_views)
 
+    
+    data_to_log = []
+    for batch_idx in range(args.num_batches_per_epoch):
+        messages_to_log = []
+        reward_matrices_to_log = []
+        reward_matrices_views_to_log = []
+
+        reward_matrices, listener_views = game.sample_batch(num_listener_views=args.num_listener_views)
+        batch_size = reward_matrices.shape[0]
+
+        # append flattened ground truth reward matrix
+        flattened_reward_matrices = reward_matrices.reshape(batch_size, -1)
+        reward_matrices_to_log.append(flattened_reward_matrices)
+
+        # convert reward matrices and listener views to tensors
         reward_matrices = torch.from_numpy(reward_matrices).float()
         listener_views = torch.from_numpy(listener_views).float()
 
         if args.partial_reward_matrix:
-            reward_matrices_views = game.generate_masked_reward_matrix_views(reward_matrices, args.chain_length)
+            reward_matrices_views = game.generate_masked_reward_matrix_views(reward_matrices, 
+                                                                                chunks=args.chunks,
+                                                                                num_views=args.chain_length)
         
-        if args.cuda:
+        if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
             listener_views = listener_views.cuda()
             
@@ -55,7 +70,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         losses_for_curr_batch = []
         for i in range(args.chain_length):
             agent_i = agents[i]
-            #breakpoint()
+            
+            # what view is the agent seeing?
             if args.partial_reward_matrix:
                 agent_view = reward_matrices_views[i]
             else:
@@ -66,6 +82,14 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                     input_lang_len=lang_len_i,
                                                     games=listener_views
                                                 )
+            
+            # append flattened message produced by agent i
+            flattened_message = lang_i.view(batch_size, -1).cpu().detach().numpy()
+            messages_to_log.append(flattened_message)
+
+            # append flattened view of reward matrices seen by agent i
+            flattened_agent_view = agent_view.view(batch_size, -1).cpu().detach().numpy()
+            reward_matrices_views_to_log.append(flattened_agent_view)
 
             if args.cuda:
                 lang_i = lang_i.cuda()
@@ -90,9 +114,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
             accuracy = (argmax_rewards == preds).float().mean().item()
 
-            # multiply by -1 bc we are maximizing the expected reward which means minimizing the negative of that
-            #losses = -1 * torch.bmm(scores_i.exp().unsqueeze(1), game_rewards.unsqueeze(-1)).squeeze().sum()
-
+            # minimize negative expected reward
             losses = -1 * torch.einsum('bvc,bvc->bv',(scores_i.exp(), game_rewards))    # size (batch_size, num_views)
             loss = losses.mean()    # take the mean over all views and each reward matrix in the batch
 
@@ -101,39 +123,54 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             batch_accuracy_after_agent_i[i].append(accuracy)
 
             losses_for_curr_batch.append(loss)
-
+        
         if training:    # use the losses from all the agents
-            #breakpoint()
             loss_across_agents = torch.mean(torch.stack(losses_for_curr_batch))
             loss_across_agents.backward()
             optimizer.step()
+
+        batch_data_to_log = reward_matrices_to_log + reward_matrices_views_to_log + messages_to_log
+        data_to_log.append(batch_data_to_log)
+        
     
     print(dataset_split)
-    for i in range(args.chain_length):
-        print('metrics after passing through agent', i)
-        print('avg reward', mean(batch_rewards_after_agent_i[i]))
-        print('train loss', mean(batch_losses_after_agent_i[i]))
-        print('accuracy', mean(batch_accuracy_after_agent_i[i]))
-        #print('predictions', preds.float().mean().item())
-    
     metrics = {}
     for i in range(args.chain_length):
         metrics['reward_' + str(i)] = mean(batch_rewards_after_agent_i[i])
         metrics['loss_' + str(i)] = mean(batch_losses_after_agent_i[i])
         metrics['accuracy_' + str(i)] = mean(batch_accuracy_after_agent_i[i])
 
-    return metrics
+        print('metrics after passing through agent', i)
+        print('reward:', metrics['reward_' + str(i)])
+        print('loss:', metrics['loss_' + str(i)])
+        print('accuracy:', metrics['accuracy_' + str(i)])
+
+    # initialize a DataFrame for logging reward matrices and messages
+    reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(args.chain_length)]
+    message_col_names = ['message_' + str(i) for i in range(args.chain_length)]
+    col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
+    df = pd.DataFrame(data_to_log, columns=col_names)
+    
+    return metrics, df
 
 def main():
     args = get_args()
     
     if args.use_same_agent:
-        agent = Agent(hidden_size=args.hidden_size,
-                        use_discrete_comm=args.discrete_comm)
+        agent = Agent(object_encoding_len = args.num_colors + args.num_shapes,
+                        num_objects = args.num_colors * args.num_shapes,
+                        hidden_size=args.hidden_size,
+                        use_discrete_comm=args.discrete_comm,
+                        max_message_len=args.max_message_len,
+                        vocab_size=args.vocab_size)
         agents = nn.ModuleList([agent for _ in range(args.chain_length)])
     else:
-        agents = nn.ModuleList([Agent(hidden_size=args.hidden_size,
-                                    use_discrete_comm=args.discrete_comm) 
+        agents = nn.ModuleList([Agent(object_encoding_len = args.num_colors + args.num_shapes,
+                                    num_objects = args.num_colors * args.num_shapes,
+                                    hidden_size=args.hidden_size,
+                                    use_discrete_comm=args.discrete_comm,
+                                    max_message_len=args.max_message_len,
+                                    vocab_size=args.vocab_size) 
                                 for _ in range(args.chain_length)])
 
     if args.cuda:
@@ -143,7 +180,7 @@ def main():
                            lr=args.lr)
     
     metrics = defaultdict(list)
-    game = SignalingBanditsGame(num_reward_matrices=args.num_reward_matrices)
+    game = SignalingBanditsGame(num_colors=args.num_colors, num_shapes=args.num_shapes)
 
     if args.wandb:
         import wandb
@@ -160,9 +197,18 @@ def main():
     for i in range(args.epochs):
         print('epoch', i)
         start = time.time()
-        train_metrics = run_epoch('train', game, agents, optimizer, args)
-        val_metrics = run_epoch('val', game, agents, optimizer, args)
-        #breakpoint()
+
+        train_metrics, train_df = run_epoch('train', game, agents, optimizer, args)
+        val_metrics, val_df = run_epoch('val', game, agents, optimizer, args)
+
+        # just save the validation set, and rewrite it after each iter
+        if args.save_outputs:
+            #np_full_save_path = os.path.join(args.save_dir, args.name + '_val.npy')
+            #with open(np_full_save_path, 'wb+') as f:
+            #    np.save(f, np.array(val_df))
+            pkl_full_save_path = os.path.join(args.save_dir, args.name + '_val.pkl')
+            val_df.to_pickle(pkl_full_save_path)
+
         for metric, value in train_metrics.items():
             metrics['train_{}'.format(metric)] = value
 

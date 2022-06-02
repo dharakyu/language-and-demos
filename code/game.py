@@ -43,29 +43,25 @@ class SimpleGame():
 class SignalingBanditsGame():
     def __init__(self, num_choices=3, 
                     num_colors=3, num_shapes=3, 
-                    max_color_val=2, max_shape_val=1,
-                    num_reward_matrices=36
+                    max_color_val=2, max_shape_val=1
                 ):
         self.num_choices = num_choices
         self.num_colors = num_colors
         self.num_shapes = num_shapes
-        self.num_reward_matrices = num_reward_matrices  # this is the number of reward matrices we 
 
         color_utilities = np.linspace(start=-max_color_val, stop=max_color_val, num=num_colors)
         shape_utilities = np.linspace(start=-max_shape_val, stop=max_shape_val, num=num_shapes)
-
+        
         color_orderings = list(itertools.permutations(color_utilities))
         shape_orderings = list(itertools.permutations(shape_utilities))
 
-        possible_idx = np.linspace(0, 35, num=num_reward_matrices, dtype=int)
-        all_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
-        self.possible_reward_assignments = [all_reward_assignments[idx] for idx in possible_idx]  # size (num_reward_matrices)
+        #all_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
+        self.possible_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
+        self.num_reward_assignments = len(self.possible_reward_assignments)
 
         num_objects = num_colors * num_shapes 
+        # all possible listener contexts
         self.combinations = list(itertools.combinations(range(num_objects), r=num_choices))
-        #breakpoint()
-        orderings_for_single_feature = set(itertools.permutations([1 if i==num_choices-1 else 0 for i in range(num_choices)], r=num_choices))
-        self.all_feature_arrangements = list(itertools.product(orderings_for_single_feature, orderings_for_single_feature))
 
     def sample_reward_matrix(self):
         """
@@ -84,15 +80,13 @@ class SignalingBanditsGame():
         context, then the corresponding row in reward_matrix is [0, 1, 0, 1, 0, 0, 3, 1]
         """
         # determines the reward configuration we are using
-        reward_assignment_idx = np.random.randint(0, self.num_reward_matrices)
+        reward_assignment_idx = np.random.randint(0, self.num_reward_assignments)
         reward_assignment = self.possible_reward_assignments[reward_assignment_idx]
         color_utilities, shape_utilities = reward_assignment
 
         # determines objects that appear in the listener context
         indices = np.random.choice(self.num_colors*self.num_shapes, size=self.num_choices, replace=False)
         
-        #breakpoint()
-        '''
         start = time.time()
         curr_idx = 0
         reward_matrix = []
@@ -112,24 +106,10 @@ class SignalingBanditsGame():
                 reward_matrix.append(embedding)
 
                 curr_idx += 1
-        #breakpoint()
-        end = time.time()
-        print('first method:', end-start)
-        '''
-
-        reward_matrix = []
         
-        for i in range(self.num_colors * self.num_shapes):
-            obj = self.all_feature_arrangements[i]
-            color_idx = obj[0].index(1)
-            color_utility = color_utilities[color_idx]
-            shape_idx = obj[1].index(1)
-            shape_utility = shape_utilities[shape_idx]
-            in_listener_context = int(i in indices)
-            embedding = np.concatenate((obj[0], obj[1]))
-            embedding = np.append(embedding, [color_utility+shape_utility, in_listener_context])
-            reward_matrix.append(embedding)
-            
+        end = time.time()
+        #print('first method:', end-start)
+
         return np.array(reward_matrix)
 
     def get_listener_view(self, reward_matrix):
@@ -221,7 +201,7 @@ class SignalingBanditsGame():
         batch_size = listener_views.shape[0]
         num_views = listener_views.shape[1]
         batch_rewards = []
-
+        start = time.time()
         for i in range(batch_size):
             game_rewards = []
             for j in range(num_views):
@@ -232,16 +212,19 @@ class SignalingBanditsGame():
                 game_rewards.append(rewards)
                 
             batch_rewards.append(game_rewards)
+        end = time.time()
+        #print('time to compute rewards:', end - start)
  
         return torch.Tensor(batch_rewards)
 
-    def generate_masked_reward_matrix_views(self, reward_matrices, num_views):
+    def generate_masked_reward_matrix_views(self, reward_matrices, chunks, num_views):
         """
         For a batch of reward matrices, produce partial views
 
         Arguments:
         reward_matrices: np.array of size (batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
-        num_views: int representing the number of partial views to generate (should be num_agents - 1)
+        chunks: list(int) representing the indices at which to split the shuffled indices (i.e. [2, 4] would yield [a[:2], a[2:4], a[4:]])
+        num_views: int representing the number of partial views to generate
 
         Return:
         reward_matrix_views: np.array of size (num_views, batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
@@ -255,7 +238,12 @@ class SignalingBanditsGame():
             shuffled_indices = np.arange(start=0, stop=reward_matrices.shape[1], dtype=int)
             np.random.shuffle(shuffled_indices)
             
-            splits = np.array_split(shuffled_indices, num_views)
+            if chunks is not None:
+                splits = np.array_split(shuffled_indices, chunks)
+                splits = splits[:num_views]
+            else:
+                splits = np.array_split(shuffled_indices, num_views)
+
             masks = []
             for split in splits:
                 mask = list(set(range(reward_matrices.shape[1])) - set(split))
