@@ -68,7 +68,12 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         lang_i = None
         lang_len_i = None
         losses_for_curr_batch = []
-        for i in range(args.chain_length):
+        if training and args.train_chain_length is not None:
+            num_gens_to_iterate_over = args.train_chain_length
+        else:
+            num_gens_to_iterate_over = args.chain_length
+
+        for i in range(num_gens_to_iterate_over):
             agent_i = agents[i]
             
             # what view is the agent seeing?
@@ -134,8 +139,9 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         
     
     print(dataset_split)
+    #breakpoint()
     metrics = {}
-    for i in range(args.chain_length):
+    for i in range(num_gens_to_iterate_over):
         metrics['reward_' + str(i)] = mean(batch_rewards_after_agent_i[i])
         metrics['loss_' + str(i)] = mean(batch_losses_after_agent_i[i])
         metrics['accuracy_' + str(i)] = mean(batch_accuracy_after_agent_i[i])
@@ -146,8 +152,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('accuracy:', metrics['accuracy_' + str(i)])
 
     # initialize a DataFrame for logging reward matrices and messages
-    reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(args.chain_length)]
-    message_col_names = ['message_' + str(i) for i in range(args.chain_length)]
+    reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
+    message_col_names = ['message_' + str(i) for i in range(num_gens_to_iterate_over)]
     col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
     df = pd.DataFrame(data_to_log, columns=col_names)
     
