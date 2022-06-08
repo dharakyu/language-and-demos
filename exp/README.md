@@ -1,3 +1,0 @@
-# exp
-
-Experiment dir
