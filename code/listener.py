@@ -85,6 +85,9 @@ class Listener(nn.Module):
         lang_length:
             if use_discrete_comm: torch.Tensor of size (batch_size, )
             else: None
+
+        Return:
+        scores: torch.Tensor of size (batch_size, num_choices)
         """
 
         # Embed games
