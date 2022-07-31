@@ -35,6 +35,7 @@ def get_args():
     parser.add_argument('--partial_reward_matrix', action='store_true')
     parser.add_argument('--use_same_agent', action='store_true')    # option to use the same agent for all the agents in the chain
     parser.add_argument('--train_chain_length', default=None, type=int)
+    parser.add_argument('--optimize_jointly', action='store_true')
 
     parser.add_argument('--chunks', nargs='+', default=None, type=int)
 

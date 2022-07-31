@@ -132,3 +132,5 @@ analysis/*.key
 analysis/*.pptx
 analysis/*.jpg
 analysis/*.html
+
+code/nohup.out

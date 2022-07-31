@@ -15,6 +15,7 @@ from statistics import mean
 from collections import defaultdict
 import time
 import os
+import copy
 #os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 def run_epoch(dataset_split, game, agents, optimizer, args):
@@ -130,9 +131,17 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             losses_for_curr_batch.append(loss)
         
         if training:    # use the losses from all the agents
-            loss_across_agents = torch.mean(torch.stack(losses_for_curr_batch))
-            loss_across_agents.backward()
-            optimizer.step()
+            if args.optimize_jointly:
+                loss_across_agents = torch.mean(torch.stack(losses_for_curr_batch))
+                loss_across_agents.backward()
+                optimizer.step()
+            else:
+                for i in range(num_gens_to_iterate_over - 1):
+                    # loss for agent i = loss for agent i+1 + ... + loss for agent n-1
+                    loss = torch.sum(torch.stack(losses_for_curr_batch)[i:])
+                    loss.backward(retain_graph=True)    # need to retain computation graph bc of the way we compute the loss
+                    optimizer[i].step()
+
 
         batch_data_to_log = reward_matrices_to_log + reward_matrices_views_to_log + messages_to_log
         data_to_log.append(batch_data_to_log)
@@ -182,9 +191,13 @@ def main():
     if args.cuda:
         agents = nn.ModuleList([agent.cuda() for agent in agents])
 
-    optimizer = optim.Adam(agents.parameters(),
+    if args.optimize_jointly:
+        optimizer = optim.Adam(agents.parameters(),
                            lr=args.lr)
-    
+    else:
+        optimizer = [optim.Adam(agent.parameters(), lr=args.lr)
+                        for agent in agents]
+
     metrics = defaultdict(list)
     game = SignalingBanditsGame(num_colors=args.num_colors, num_shapes=args.num_shapes)
 
@@ -209,9 +222,6 @@ def main():
 
         # just save the validation set, and rewrite it after each iter
         if args.save_outputs:
-            #np_full_save_path = os.path.join(args.save_dir, args.name + '_val.npy')
-            #with open(np_full_save_path, 'wb+') as f:
-            #    np.save(f, np.array(val_df))
             pkl_full_save_path = os.path.join(args.save_dir, args.name + '_val.pkl')
             val_df.to_pickle(pkl_full_save_path)
 
