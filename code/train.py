@@ -16,6 +16,8 @@ from collections import defaultdict
 import time
 import os
 import copy
+
+import plotly.express as px
 #os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 def run_epoch(dataset_split, game, agents, optimizer, args):
@@ -66,14 +68,17 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             if args.partial_reward_matrix:
                 reward_matrices_views = reward_matrices_views.cuda()
 
+        prev_lang_i = None
         lang_i = None
         lang_len_i = None
+
         losses_for_curr_batch = []
         if training and args.train_chain_length is not None:
             num_gens_to_iterate_over = args.train_chain_length
         else:
             num_gens_to_iterate_over = args.chain_length
 
+        all_messages_across_gens = []
         for i in range(num_gens_to_iterate_over):
             agent_i = agents[i]
             
@@ -83,11 +88,12 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             else:
                 agent_view = reward_matrices
 
+            # lang_i is shape (batch_size, message_len, vocab_size, num_gens_to_iterate_over)
             lang_i, lang_len_i, scores_i = agent_i(reward_matrices=agent_view,
-                                                    input_lang=lang_i,
-                                                    input_lang_len=lang_len_i,
-                                                    games=listener_views
-                                                )
+                                                        input_lang=lang_i,
+                                                        input_lang_len=lang_len_i,
+                                                        games=listener_views
+                                                    )
             
             # append flattened message produced by agent i
             flattened_message = lang_i.view(batch_size, -1).cpu().detach().numpy()
@@ -96,6 +102,25 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             # append flattened view of reward matrices seen by agent i
             flattened_agent_view = agent_view.view(batch_size, -1).cpu().detach().numpy()
             reward_matrices_views_to_log.append(flattened_agent_view)
+
+            if args.ingest_multiple_messages:
+                # take lang_i off the gpu and unsqueeze
+                lang_i = lang_i.unsqueeze(-1).cpu()
+                if prev_lang_i is not None: prev_lang_i = prev_lang_i.cpu()
+
+                if prev_lang_i is not None:
+                    lang_i = torch.cat([prev_lang_i, lang_i], dim=-1)   # shape (batch_size, message_len, vocab_size, gen_i)
+                # else, there is nothing to append
+
+                # fill up the rest of the message with zeros
+                empty_message_size = (lang_i.shape[0], lang_i.shape[1], lang_i.shape[2], num_gens_to_iterate_over-i-1)
+                empty_message = torch.zeros(size=empty_message_size)    # shape (batch_size, message_len, vocab_size, gen_i)
+
+                lang_i = torch.cat([lang_i, empty_message], dim=-1)
+
+                # only keep the nonzero messages
+                prev_lang_i = lang_i[:, :, :, :i+1]
+                
 
             if args.cuda:
                 lang_i = lang_i.cuda()
@@ -129,6 +154,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             batch_accuracy_after_agent_i[i].append(accuracy)
 
             losses_for_curr_batch.append(loss)
+
         
         if training:    # use the losses from all the agents
             if args.optimize_jointly:
@@ -136,8 +162,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 loss_across_agents.backward()
                 optimizer.step()
             else:
-                for i in range(num_gens_to_iterate_over - 1):
-                    # loss for agent i = loss for agent i+1 + ... + loss for agent n-1
+                for i in range(num_gens_to_iterate_over):
+                    # loss for agent i = loss for agent i+1 + ... + loss for agent n
                     loss = torch.sum(torch.stack(losses_for_curr_batch)[i:])
                     loss.backward(retain_graph=True)    # need to retain computation graph bc of the way we compute the loss
                     optimizer[i].step()
@@ -172,20 +198,25 @@ def main():
     args = get_args()
     
     if args.use_same_agent:
-        agent = Agent(object_encoding_len = args.num_colors + args.num_shapes,
+        agent = Agent(chain_length=args.chain_length,
+                        object_encoding_len = args.num_colors + args.num_shapes,
                         num_objects = args.num_colors * args.num_shapes,
                         hidden_size=args.hidden_size,
                         use_discrete_comm=args.discrete_comm,
                         max_message_len=args.max_message_len,
-                        vocab_size=args.vocab_size)
+                        vocab_size=args.vocab_size,
+                        ingest_multiple_messages=args.ingest_multiple_messages)
+
         agents = nn.ModuleList([agent for _ in range(args.chain_length)])
     else:
-        agents = nn.ModuleList([Agent(object_encoding_len = args.num_colors + args.num_shapes,
+        agents = nn.ModuleList([Agent(chain_length=args.chain_length,
+                                    object_encoding_len = args.num_colors + args.num_shapes,
                                     num_objects = args.num_colors * args.num_shapes,
                                     hidden_size=args.hidden_size,
                                     use_discrete_comm=args.discrete_comm,
                                     max_message_len=args.max_message_len,
-                                    vocab_size=args.vocab_size) 
+                                    vocab_size=args.vocab_size,
+                                    ingest_multiple_messages=args.ingest_multiple_messages) 
                                 for _ in range(args.chain_length)])
 
     if args.cuda:
@@ -213,13 +244,16 @@ def main():
         else:
             args.name = wandb.run.name
 
+    # initialize a dataframe to log reward of all n generations
+    df = pd.DataFrame(columns=['gen', 'val_reward', 'epoch'])
+
     for i in range(args.epochs):
         print('epoch', i)
         start = time.time()
 
         train_metrics, train_df = run_epoch('train', game, agents, optimizer, args)
         val_metrics, val_df = run_epoch('val', game, agents, optimizer, args)
-
+        
         # just save the validation set, and rewrite it after each iter
         if args.save_outputs:
             pkl_full_save_path = os.path.join(args.save_dir, args.name + '_val.pkl')
@@ -235,8 +269,17 @@ def main():
         end = time.time()
         print('elapsed time:', end-start)
 
+        # add validation reward to dataframe
+        for gen in range(args.chain_length):
+            entry = [gen, metrics['val_reward_'+str(gen)], metrics['current_epoch']]
+            df.loc[len(df.index)] = entry
+
+        # create plotly object
+        generation_plot = px.line(df, x='epoch', y='val_reward', color='gen', markers=True)
+
         if args.wandb:
-            wandb.log(metrics)
+            wandb.log(metrics)  # log standard metrics
+            wandb.log({'generation_plot': generation_plot}) # log side-by-side comparison of reward across generations
         
         
 if __name__ == "__main__":

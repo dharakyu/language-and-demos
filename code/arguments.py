@@ -6,7 +6,7 @@ def get_args():
         formatter_class=ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('--batch_size', default=32, type=int)
-    parser.add_argument('--epochs', default=100, type=int)
+    parser.add_argument('--epochs', default=40, type=int)
     parser.add_argument('--num_batches_per_epoch', default=100, type=int)
     parser.add_argument('--log_interval', default=100, type=int)
     parser.add_argument('--lr', default=1e-5, type=float)
@@ -38,6 +38,8 @@ def get_args():
     parser.add_argument('--optimize_jointly', action='store_true')
 
     parser.add_argument('--chunks', nargs='+', default=None, type=int)
+
+    parser.add_argument('--ingest_multiple_messages', action='store_true')
 
     parser.add_argument('--save_dir', default='/home/dharakyu/signaling-bandits/outputs', type=str)
     parser.add_argument('--save_outputs', action='store_true')
