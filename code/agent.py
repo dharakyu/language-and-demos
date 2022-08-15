@@ -8,10 +8,12 @@ from listener import RNNEncoder
 import data
 
 class Agent(nn.Module):
-    def __init__(self, object_encoding_len=6, num_objects=9,
+    def __init__(self, chain_length,
+                object_encoding_len=6, num_objects=9,
                 embedding_dim=64, vocab_size=40, hidden_size=100, 
                 softmax_temp=1.0, max_message_len=4,
-                use_discrete_comm=False, view_listener_context=False):
+                use_discrete_comm=False, view_listener_context=False,
+                ingest_multiple_messages=False):
                 
         super().__init__()
         assert embedding_dim % 2 == 0, "input dim must be divisible by 2"
@@ -24,7 +26,10 @@ class Agent(nn.Module):
         self.use_discrete_comm = use_discrete_comm
         self.view_listener_context = view_listener_context
 
+        self.ingest_multiple_messages = ingest_multiple_messages
+
         extension = 2 if view_listener_context else 1
+        self.num_messages_received = chain_length if ingest_multiple_messages else 1
 
         self.games_embedding =  nn.Sequential(
                                     nn.Linear(object_encoding_len, hidden_size),
@@ -37,15 +42,14 @@ class Agent(nn.Module):
                                             nn.ReLU(),
                                             nn.Linear(hidden_size, embedding_dim)
                                         )
-        self.input_message_embedding = nn.Linear(max_message_len * vocab_size, 
+        self.input_message_embedding = nn.Linear(max_message_len * vocab_size * self.num_messages_received, 
                                                     max_message_len * vocab_size)
+
         self.reduce_reward_matrix_and_input_message = nn.Linear(embedding_dim * num_objects + max_message_len * vocab_size,
                                                                 embedding_dim)
 
         if use_discrete_comm:
             # for producing a message
-            #self.initial_message = nn.Parameter()
-            
             self.init_h = nn.Linear((embedding_dim * num_objects) + (max_message_len * vocab_size), hidden_size)
             
             self.onehot_embedding = nn.Linear(self.vocab_size, self.embedding_dim)
@@ -81,6 +85,7 @@ class Agent(nn.Module):
         Arguments:
         reward_matrices: torch.Tensor of size (batch_size, num_objects, object_encoding_length+extension)
         input_message: torch.Tensor of size (batch_size, max_message_len, vocab_size)
+            if args.ingest_multiple_messages is True, then input_message is size (batch_size, max_message_len, vocab_size)
 
         Return:
         emb: torch.Tensor of size (batch_size, embedding_dim * num_objects + max_message_len * vocab_size)
@@ -94,8 +99,8 @@ class Agent(nn.Module):
         game_emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
         game_emb = game_emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)
 
-        # TODO: add assert statement to make sure the message is the right size (mostly for discrete setting)
-        input_message_reshaped = input_message.view(batch_size, -1) # (batch_size, max_message_len * vocab_size)
+        input_message_reshaped = input_message.view(batch_size, -1) # (batch_size, max_message_len * vocab_size * num_messages)
+        assert(input_message_reshaped.shape == (batch_size, self.max_message_len * self.vocab_size * self.num_messages_received))
         input_message_reshaped = input_message_reshaped.to(reward_matrices.device)
         input_message_emb = self.input_message_embedding(input_message_reshaped) # (batch_size, max_message_len * vocab_size)
 
@@ -257,8 +262,11 @@ class Agent(nn.Module):
         batch_size = reward_matrices.shape[0]
 
         if input_lang is None:  # create a null message
-            input_lang = torch.zeros(size=(batch_size, self.max_message_len, self.vocab_size)).to(reward_matrices.device)
-            input_lang_len = torch.full(size=(batch_size,), fill_value=self.max_message_len).to(reward_matrices.device)
+            if self.num_messages_received > 1:
+                input_lang = torch.zeros(size=(batch_size, self.max_message_len, self.vocab_size, self.num_messages_received)).to(reward_matrices.device)
+            else:
+                input_lang = torch.zeros(size=(batch_size, self.max_message_len, self.vocab_size)).to(reward_matrices.device)
+            #input_lang_len = torch.full(size=(batch_size,), fill_value=self.max_message_len).to(reward_matrices.device)
         
         # 1. produce messages
         reward_matrix_and_input_message_emb = self.embed_reward_matrix_and_input_message(reward_matrices, input_lang)
