@@ -217,7 +217,11 @@ class SignalingBanditsGame():
  
         return torch.Tensor(batch_rewards)
 
-    def generate_masked_reward_matrix_views(self, reward_matrices, chunks, num_views):
+    def generate_masked_reward_matrix_views(self, reward_matrices, 
+                                                    chunks, 
+                                                    num_views,
+                                                    same_agent_view,
+                                                    no_additional_info):
         """
         For a batch of reward matrices, produce partial views
 
@@ -225,6 +229,8 @@ class SignalingBanditsGame():
         reward_matrices: np.array of size (batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
         chunks: list(int) representing the indices at which to split the shuffled indices (i.e. [2, 4] would yield [a[:2], a[2:4], a[4:]])
         num_views: int representing the number of partial views to generate
+        same_agent_view: bool to indicate if all agents in the chain see the same k objects
+        no_additional_info: bool to indicate if there is no new information provided after the first agent
 
         Return:
         reward_matrix_views: np.array of size (num_views, batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
@@ -256,7 +262,15 @@ class SignalingBanditsGame():
             for agent_idx in range(num_views):
                 mask = batch_masks[sample_idx][agent_idx]
                 reward_matrices_views[agent_idx, sample_idx, mask, :] = 0
+        
+        if same_agent_view:
+            # repeat the view of the first agent for all the agents
+            reward_matrices_views = reward_matrices_views[0, :, :, :].unsqueeze(0).repeat(num_views, 1, 1, 1)
 
+        if no_additional_info:
+            # just do zeros for all agents after agent 0
+            zeros = torch.zeros_like(reward_matrices_views)[:-1, :, :, :]
+            reward_matrices_views = torch.cat([reward_matrices_views[0, :, :, :].unsqueeze(0), zeros], dim=0)
         return reward_matrices_views
             
 

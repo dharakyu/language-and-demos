@@ -18,7 +18,6 @@ import os
 import copy
 
 import plotly.express as px
-#os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 def run_epoch(dataset_split, game, agents, optimizer, args):
     """
@@ -59,7 +58,9 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         if args.partial_reward_matrix:
             reward_matrices_views = game.generate_masked_reward_matrix_views(reward_matrices, 
                                                                                 chunks=args.chunks,
-                                                                                num_views=args.chain_length)
+                                                                                num_views=args.chain_length,
+                                                                                same_agent_view=args.same_agent_view,
+                                                                                no_additional_info=args.no_additional_info)
         
         if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
@@ -78,9 +79,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         else:
             num_gens_to_iterate_over = args.chain_length
 
-        all_messages_across_gens = []
+        # these are the indices of the agents that we randomly select to be in the training chain
+        random_indices = np.random.choice(a=args.chain_length, size=num_gens_to_iterate_over, replace=True)
         for i in range(num_gens_to_iterate_over):
-            agent_i = agents[i]
+            
+            if args.shuffle_agents:
+                random_i = random_indices[i]
+                agent_i = agents[random_i]
+            else:
+                agent_i = agents[i]
             
             # what view is the agent seeing?
             if args.partial_reward_matrix:
@@ -113,14 +120,16 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 # else, there is nothing to append
 
                 # fill up the rest of the message with zeros
-                empty_message_size = (lang_i.shape[0], lang_i.shape[1], lang_i.shape[2], num_gens_to_iterate_over-i-1)
+                # note: even when doing chain length extrapolation the message should be size args.chain_length,
+                # not args.train_length
+                empty_message_size = (lang_i.shape[0], lang_i.shape[1], lang_i.shape[2], args.chain_length-i-1)
                 empty_message = torch.zeros(size=empty_message_size)    # shape (batch_size, message_len, vocab_size, gen_i)
+
 
                 lang_i = torch.cat([lang_i, empty_message], dim=-1)
 
                 # only keep the nonzero messages
                 prev_lang_i = lang_i[:, :, :, :i+1]
-                
 
             if args.cuda:
                 lang_i = lang_i.cuda()
@@ -155,7 +164,6 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
             losses_for_curr_batch.append(loss)
 
-        
         if training:    # use the losses from all the agents
             if args.optimize_jointly:
                 loss_across_agents = torch.mean(torch.stack(losses_for_curr_batch))
@@ -166,8 +174,12 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                     # loss for agent i = loss for agent i+1 + ... + loss for agent n
                     loss = torch.sum(torch.stack(losses_for_curr_batch)[i:])
                     loss.backward(retain_graph=True)    # need to retain computation graph bc of the way we compute the loss
-                    optimizer[i].step()
 
+                    if args.shuffle_agents:
+                        agent_i = random_indices[i]
+                        optimizer[agent_i].step()
+                    else:
+                        optimizer[i].step()
 
         batch_data_to_log = reward_matrices_to_log + reward_matrices_views_to_log + messages_to_log
         data_to_log.append(batch_data_to_log)
