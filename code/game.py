@@ -87,7 +87,6 @@ class SignalingBanditsGame():
         # determines objects that appear in the listener context
         indices = np.random.choice(self.num_colors*self.num_shapes, size=self.num_choices, replace=False)
         
-        start = time.time()
         curr_idx = 0
         reward_matrix = []
         for i in range(self.num_colors):
@@ -106,10 +105,7 @@ class SignalingBanditsGame():
                 reward_matrix.append(embedding)
 
                 curr_idx += 1
-        
-        end = time.time()
-        #print('first method:', end-start)
-
+    
         return np.array(reward_matrix)
 
     def get_listener_view(self, reward_matrix):
@@ -221,7 +217,8 @@ class SignalingBanditsGame():
                                                     chunks, 
                                                     num_views,
                                                     same_agent_view,
-                                                    no_additional_info):
+                                                    no_additional_info,
+                                                    num_utilities_seen_in_training):
         """
         For a batch of reward matrices, produce partial views
 
@@ -231,6 +228,7 @@ class SignalingBanditsGame():
         num_views: int representing the number of partial views to generate
         same_agent_view: bool to indicate if all agents in the chain see the same k objects
         no_additional_info: bool to indicate if there is no new information provided after the first agent
+        num_utilities_seen_in training: if not None, this specifies how many utilities the agent sees
 
         Return:
         reward_matrix_views: np.array of size (num_views, batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
@@ -239,13 +237,17 @@ class SignalingBanditsGame():
         # generate masks
         batch_size = reward_matrices.shape[0]
         batch_masks = []
-    
+        
         for _ in range(batch_size):
             shuffled_indices = np.arange(start=0, stop=reward_matrices.shape[1], dtype=int)
             np.random.shuffle(shuffled_indices)
             
             if chunks is not None:
-                splits = np.array_split(shuffled_indices, chunks)
+
+                if num_utilities_seen_in_training is not None:  # view fewer utilities during training, compared to test
+                    splits = np.array_split(shuffled_indices, num_utilities_seen_in_training)
+                else:
+                    splits = np.array_split(shuffled_indices, chunks)
                 splits = splits[:num_views]
             else:
                 splits = np.array_split(shuffled_indices, num_views)
@@ -255,7 +257,7 @@ class SignalingBanditsGame():
                 mask = list(set(range(reward_matrices.shape[1])) - set(split))
                 masks.append(mask)
             batch_masks.append(masks)
-
+        
         # apply masks to reward matrices (only to the first n-1 agents)
         reward_matrices_views = torch.stack([reward_matrices for _ in range(num_views)])
         for sample_idx in range(batch_size):
@@ -271,6 +273,7 @@ class SignalingBanditsGame():
             # just do zeros for all agents after agent 0
             zeros = torch.zeros_like(reward_matrices_views)[:-1, :, :, :]
             reward_matrices_views = torch.cat([reward_matrices_views[0, :, :, :].unsqueeze(0), zeros], dim=0)
+        
         return reward_matrices_views
             
 

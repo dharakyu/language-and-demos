@@ -54,14 +54,19 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         # convert reward matrices and listener views to tensors
         reward_matrices = torch.from_numpy(reward_matrices).float()
         listener_views = torch.from_numpy(listener_views).float()
-
+        
         if args.partial_reward_matrix:
+            num_utilities_seen_in_training = None
+            if args.num_utilities_seen_in_training is not None and training:
+                num_utilities_seen_in_training = args.num_utilities_seen_in_training
+
             reward_matrices_views = game.generate_masked_reward_matrix_views(reward_matrices, 
                                                                                 chunks=args.chunks,
                                                                                 num_views=args.chain_length,
                                                                                 same_agent_view=args.same_agent_view,
-                                                                                no_additional_info=args.no_additional_info)
-        
+                                                                                no_additional_info=args.no_additional_info,
+                                                                                num_utilities_seen_in_training=num_utilities_seen_in_training)
+  
         if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
             listener_views = listener_views.cuda()
