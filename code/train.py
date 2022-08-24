@@ -20,6 +20,30 @@ import copy
 
 import plotly.express as px
 
+def handle_demos(batch_size,
+                i,
+                agent_i,
+                agent_view,
+                prev_demo_i,
+                listener_views,
+                args
+                ):
+    """
+    Helper function for iterated learning in the learning from demos setting
+
+    Return:
+    scores_i: torch.Tensor of shape (batch_size, 3)
+    """
+
+    scores_i = agent_i(reward_matrices=agent_view,
+                    demos=prev_demo_i,
+                    games=listener_views
+                    )
+
+    return scores_i
+    
+
+
 def handle_messages(batch_size,
                     i,
                     agent_i, 
@@ -102,7 +126,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_to_log = []
         reward_matrices_views_to_log = []
 
+        start = time.time()
         reward_matrices, listener_views = game.sample_batch(num_listener_views=args.num_listener_views)
+        end = time.time()
+        #print("time to generate games", end - start)
+        
         batch_size = reward_matrices.shape[0]
 
         # append flattened ground truth reward matrix
@@ -132,9 +160,12 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             if args.partial_reward_matrix:
                 reward_matrices_views = reward_matrices_views.cuda()
 
-        prev_lang_i = None
-        lang_i = None
-        lang_len_i = None
+        if args.learn_from_demo:
+            prev_demo_i = None
+        else:
+            prev_lang_i = None
+            lang_i = None
+            lang_len_i = None
 
         losses_for_curr_batch = []
         if training and args.train_chain_length is not None:
@@ -159,7 +190,13 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 agent_view = reward_matrices
 
             if args.learn_from_demo:
-                pass
+                scores_i = handle_demos(batch_size,
+                                            i,
+                                            agent_i,
+                                            agent_view,
+                                            prev_demo_i,
+                                            listener_views,
+                                            args)
             else:
                 prev_lang_i, lang_i, lang_len_i, scores_i = handle_messages(batch_size,
                                                                 i,
@@ -175,14 +212,20 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
             # get the listener predictions
             preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
-                
+            start = time.time()
             # get the rewards associated with the objects in each game
             game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
+            end = time.time()
+            #print("time to retrieve the rewards associated with the objects in each game", end - start)
             # move to GPU if necessary
             game_rewards = game_rewards.to(reward_matrices.device)
 
             # what reward did the model actually earn
+            start = time.time()
             model_rewards = game_rewards.gather(-1, preds.unsqueeze(-1))
+            end = time.time()
+            #print("time to compute the reward the model earned", end - start)
+            #breakpoint()
 
             # what is the maximum reward and the associated index
             max_rewards, argmax_rewards = game_rewards.max(-1)
@@ -246,28 +289,26 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
 def main():
     args = get_args()
-    
-    if args.use_same_agent:
+    if args.learn_from_demo:
+        agent = DemoAgent(chain_length=args.chain_length,
+                            object_encoding_len=args.num_colors + args.num_shapes, 
+                            num_objects=args.num_colors * args.num_shapes,
+                            embedding_dim=args.embedding_size,
+                            hidden_size=args.hidden_size)
+    else:
         agent = Agent(chain_length=args.chain_length,
                         object_encoding_len = args.num_colors + args.num_shapes,
-                        num_objects = args.num_colors * args.num_shapes,
+                        num_objects=args.num_colors * args.num_shapes,
                         hidden_size=args.hidden_size,
                         use_discrete_comm=args.discrete_comm,
                         max_message_len=args.max_message_len,
                         vocab_size=args.vocab_size,
                         ingest_multiple_messages=args.ingest_multiple_messages)
-
+    
+    if args.use_same_agent:
         agents = nn.ModuleList([agent for _ in range(args.chain_length)])
     else:
-        agents = nn.ModuleList([Agent(chain_length=args.chain_length,
-                                    object_encoding_len = args.num_colors + args.num_shapes,
-                                    num_objects = args.num_colors * args.num_shapes,
-                                    hidden_size=args.hidden_size,
-                                    use_discrete_comm=args.discrete_comm,
-                                    max_message_len=args.max_message_len,
-                                    vocab_size=args.vocab_size,
-                                    ingest_multiple_messages=args.ingest_multiple_messages) 
-                                for _ in range(args.chain_length)])
+        agents = nn.ModuleList([copy.deepcopy(agent) for _ in range(args.chain_length)])
 
     if args.cuda:
         agents = nn.ModuleList([agent.cuda() for agent in agents])
