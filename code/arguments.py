@@ -47,6 +47,8 @@ def get_args():
     parser.add_argument('--same_agent_view', action='store_true')   # whether each agent gets the same view of the objects
     parser.add_argument('--no_additional_info', action='store_true')    # whether there is no additional information provided after agent 0
 
+    parser.add_argument('--learn_from_demo', action='store_true')
+
     parser.add_argument('--save_dir', default='/home/dharakyu/signaling-bandits/outputs', type=str)
     parser.add_argument('--save_outputs', action='store_true')
 

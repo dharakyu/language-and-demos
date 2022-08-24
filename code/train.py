@@ -3,6 +3,7 @@ from listener import Listener
 from game import SignalingBanditsGame
 from arguments import get_args
 from agent import Agent
+from demo_agent import DemoAgent
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,64 @@ import os
 import copy
 
 import plotly.express as px
+
+def handle_messages(batch_size,
+                    i,
+                    agent_i, 
+                    agent_view, 
+                    prev_lang_i,
+                    lang_i, 
+                    lang_len_i, 
+                    listener_views,
+                    messages_to_log,
+                    reward_matrices_views_to_log,
+                    args):
+    """
+    Helper function to handle the core iterated learning portion of the learning
+    through messages setting
+
+    """
+    # lang_i is shape (batch_size, message_len, vocab_size, num_gens_to_iterate_over)
+    lang_i, lang_len_i, scores_i = agent_i(reward_matrices=agent_view,
+                                                            input_lang=lang_i,
+                                                            input_lang_len=lang_len_i,
+                                                            games=listener_views
+                                                        )
+                
+    # append flattened message produced by agent i
+    flattened_message = lang_i.view(batch_size, -1).cpu().detach().numpy()
+    messages_to_log.append(flattened_message)
+
+    # append flattened view of reward matrices seen by agent i
+    flattened_agent_view = agent_view.view(batch_size, -1).cpu().detach().numpy()
+    reward_matrices_views_to_log.append(flattened_agent_view)
+
+    if args.ingest_multiple_messages:
+        # take lang_i off the gpu and unsqueeze
+        lang_i = lang_i.unsqueeze(-1).cpu()
+        if prev_lang_i is not None: prev_lang_i = prev_lang_i.cpu()
+
+        if prev_lang_i is not None:
+            lang_i = torch.cat([prev_lang_i, lang_i], dim=-1)   # shape (batch_size, message_len, vocab_size, gen_i)
+            # else, there is nothing to append
+
+        # fill up the rest of the message with zeros
+        # note: even when doing chain length extrapolation the message should be size args.chain_length,
+        # not args.train_length
+        empty_message_size = (lang_i.shape[0], lang_i.shape[1], lang_i.shape[2], args.chain_length-i-1)
+        empty_message = torch.zeros(size=empty_message_size)    # shape (batch_size, message_len, vocab_size, gen_i)
+
+
+        lang_i = torch.cat([lang_i, empty_message], dim=-1)
+
+        # only keep the nonzero messages
+        prev_lang_i = lang_i[:, :, :, :i+1]
+
+    if args.cuda:
+        lang_i = lang_i.cuda()
+        if args.discrete_comm: lang_len_i = lang_len_i.cuda()
+
+    return prev_lang_i, lang_i, lang_len_i, scores_i
 
 def run_epoch(dataset_split, game, agents, optimizer, args):
     """
@@ -36,7 +95,6 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_rewards_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
-
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -66,7 +124,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                                 same_agent_view=args.same_agent_view,
                                                                                 no_additional_info=args.no_additional_info,
                                                                                 num_utilities_seen_in_training=num_utilities_seen_in_training)
-  
+            
         if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
             listener_views = listener_views.cuda()
@@ -100,45 +158,20 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             else:
                 agent_view = reward_matrices
 
-            # lang_i is shape (batch_size, message_len, vocab_size, num_gens_to_iterate_over)
-            lang_i, lang_len_i, scores_i = agent_i(reward_matrices=agent_view,
-                                                        input_lang=lang_i,
-                                                        input_lang_len=lang_len_i,
-                                                        games=listener_views
-                                                    )
-            
-            # append flattened message produced by agent i
-            flattened_message = lang_i.view(batch_size, -1).cpu().detach().numpy()
-            messages_to_log.append(flattened_message)
-
-            # append flattened view of reward matrices seen by agent i
-            flattened_agent_view = agent_view.view(batch_size, -1).cpu().detach().numpy()
-            reward_matrices_views_to_log.append(flattened_agent_view)
-
-            if args.ingest_multiple_messages:
-                # take lang_i off the gpu and unsqueeze
-                lang_i = lang_i.unsqueeze(-1).cpu()
-                if prev_lang_i is not None: prev_lang_i = prev_lang_i.cpu()
-
-                if prev_lang_i is not None:
-                    lang_i = torch.cat([prev_lang_i, lang_i], dim=-1)   # shape (batch_size, message_len, vocab_size, gen_i)
-                # else, there is nothing to append
-
-                # fill up the rest of the message with zeros
-                # note: even when doing chain length extrapolation the message should be size args.chain_length,
-                # not args.train_length
-                empty_message_size = (lang_i.shape[0], lang_i.shape[1], lang_i.shape[2], args.chain_length-i-1)
-                empty_message = torch.zeros(size=empty_message_size)    # shape (batch_size, message_len, vocab_size, gen_i)
-
-
-                lang_i = torch.cat([lang_i, empty_message], dim=-1)
-
-                # only keep the nonzero messages
-                prev_lang_i = lang_i[:, :, :, :i+1]
-
-            if args.cuda:
-                lang_i = lang_i.cuda()
-                if args.discrete_comm: lang_len_i = lang_len_i.cuda()
+            if args.learn_from_demo:
+                pass
+            else:
+                prev_lang_i, lang_i, lang_len_i, scores_i = handle_messages(batch_size,
+                                                                i,
+                                                                agent_i, 
+                                                                agent_view, 
+                                                                prev_lang_i,
+                                                                lang_i, 
+                                                                lang_len_i, 
+                                                                listener_views,
+                                                                messages_to_log,
+                                                                reward_matrices_views_to_log,
+                                                                args)
 
             # get the listener predictions
             preds = torch.argmax(scores_i, dim=-1)    # (batch_size)

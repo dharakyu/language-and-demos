@@ -51,11 +51,11 @@ class Agent(nn.Module):
         if use_discrete_comm:
             # for producing a message
             self.init_h = nn.Linear((embedding_dim * num_objects) + (max_message_len * vocab_size), hidden_size)
-            
+                
             self.onehot_embedding = nn.Linear(self.vocab_size, self.embedding_dim)
             self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
             self.outputs2vocab = nn.Linear(self.hidden_size, self.vocab_size)
-            
+                
             # for computing scores over objects
             message_embedding = nn.Embedding(vocab_size, embedding_dim)
             self.lang_model = RNNEncoder(message_embedding, hidden_size)
@@ -64,23 +64,22 @@ class Agent(nn.Module):
         else:
             # produce a continuous message, conditioned on the reward matrix/input message
             self.cont_comm_message_mlp = nn.Sequential(
-                            ##nn.Linear(object_encoding_len + extension, self.hidden_size),
-                            nn.Linear(((embedding_dim * num_objects) + (max_message_len * vocab_size)) // max_message_len, hidden_size),
-                            nn.ReLU(),
-                            nn.Linear(self.hidden_size, self.vocab_size)
-                        )
+                                ##nn.Linear(object_encoding_len + extension, self.hidden_size),
+                                nn.Linear(((embedding_dim * num_objects) + (max_message_len * vocab_size)) // max_message_len, hidden_size),
+                                nn.ReLU(),
+                                nn.Linear(self.hidden_size, self.vocab_size)
+                            )
 
             # embed the input message so we can take a dot product of that with the listener context embedding
             self.cont_comm_lang_model_mlp = nn.Sequential(
-                            nn.Linear(max_message_len * vocab_size, hidden_size),
-                            nn.ReLU(),
-                            nn.Linear(hidden_size, embedding_dim)
-                        )
-
+                                nn.Linear(max_message_len * vocab_size, hidden_size),
+                                nn.ReLU(),
+                                nn.Linear(hidden_size, embedding_dim)
+                            )
 
     def embed_reward_matrix_and_input_message(self, reward_matrices, input_message):
         """
-        Produce an embedding of the reward matrices
+        Produce a composite embedding of the reward matrix and the input message
 
         Arguments:
         reward_matrices: torch.Tensor of size (batch_size, num_objects, object_encoding_length+extension)
@@ -96,15 +95,15 @@ class Agent(nn.Module):
             # trim listener context
             reward_matrices = reward_matrices[:, :, :-1]
 
-        game_emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
-        game_emb = game_emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)
+        reward_matrix_emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
+        reward_matrix_emb = reward_matrix_emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)
 
         input_message_reshaped = input_message.view(batch_size, -1) # (batch_size, max_message_len * vocab_size * num_messages)
         assert(input_message_reshaped.shape == (batch_size, self.max_message_len * self.vocab_size * self.num_messages_received))
         input_message_reshaped = input_message_reshaped.to(reward_matrices.device)
         input_message_emb = self.input_message_embedding(input_message_reshaped) # (batch_size, max_message_len * vocab_size)
 
-        emb = torch.cat([game_emb, input_message_emb], dim=1)   # (batch_size, embedding_dim * num_objects + max_message_len * vocab_size)
+        emb = torch.cat([reward_matrix_emb, input_message_emb], dim=1)   # (batch_size, embedding_dim * num_objects + max_message_len * vocab_size)
         return emb
 
     def get_continuous_messages(self, emb):
@@ -228,7 +227,6 @@ class Agent(nn.Module):
 
         return lang_tensor, lang_length
 
-
     def forward(self, 
                 reward_matrices,
                 input_lang,
@@ -261,6 +259,7 @@ class Agent(nn.Module):
         """
         batch_size = reward_matrices.shape[0]
 
+        # learning from language
         if input_lang is None:  # create a null message
             if self.num_messages_received > 1:
                 input_lang = torch.zeros(size=(batch_size, self.max_message_len, self.vocab_size, self.num_messages_received)).to(reward_matrices.device)
