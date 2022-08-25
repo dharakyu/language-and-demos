@@ -8,6 +8,7 @@ from demo_agent import DemoAgent
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 import numpy as np
 import pandas as pd
@@ -25,7 +26,8 @@ def handle_demos(batch_size,
                 agent_i,
                 agent_view,
                 prev_demo_i,
-                listener_views,
+                demo_listener_views,
+                eval_listener_views,
                 args
                 ):
     """
@@ -34,13 +36,13 @@ def handle_demos(batch_size,
     Return:
     scores_i: torch.Tensor of shape (batch_size, 3)
     """
+    
+    demo_scores_i, eval_scores_i = agent_i(reward_matrices=agent_view,
+                                            demos=prev_demo_i,
+                                            games_for_future_demos=demo_listener_views,
+                                            games_for_eval=eval_listener_views)
 
-    scores_i = agent_i(reward_matrices=agent_view,
-                    demos=prev_demo_i,
-                    games=listener_views
-                    )
-
-    return scores_i
+    return demo_scores_i, eval_scores_i
     
 
 
@@ -126,11 +128,9 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_to_log = []
         reward_matrices_views_to_log = []
 
-        start = time.time()
-        reward_matrices, listener_views = game.sample_batch(num_listener_views=args.num_listener_views)
-        end = time.time()
-        #print("time to generate games", end - start)
-        
+        reward_matrices, listener_views, demo_listener_views = game.sample_batch(num_listener_views=args.num_listener_views,
+                                                                        num_examples_for_demos=args.num_examples_for_demos)
+
         batch_size = reward_matrices.shape[0]
 
         # append flattened ground truth reward matrix
@@ -140,6 +140,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         # convert reward matrices and listener views to tensors
         reward_matrices = torch.from_numpy(reward_matrices).float()
         listener_views = torch.from_numpy(listener_views).float()
+        demo_listener_views = torch.from_numpy(demo_listener_views).float()
         
         if args.partial_reward_matrix:
             num_utilities_seen_in_training = None
@@ -156,11 +157,12 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
             listener_views = listener_views.cuda()
+            demo_listener_views = demo_listener_views.cuda()
             
             if args.partial_reward_matrix:
                 reward_matrices_views = reward_matrices_views.cuda()
 
-        if args.learn_from_demo:
+        if args.learn_from_demos:
             prev_demo_i = None
         else:
             prev_lang_i = None
@@ -189,12 +191,13 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             else:
                 agent_view = reward_matrices
 
-            if args.learn_from_demo:
-                scores_i = handle_demos(batch_size,
+            if args.learn_from_demos:
+                demo_scores_i, scores_i = handle_demos(batch_size,
                                             i,
                                             agent_i,
                                             agent_view,
                                             prev_demo_i,
+                                            demo_listener_views,
                                             listener_views,
                                             args)
             else:
@@ -212,20 +215,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
             # get the listener predictions
             preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
-            start = time.time()
+
             # get the rewards associated with the objects in each game
             game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
-            end = time.time()
-            #print("time to retrieve the rewards associated with the objects in each game", end - start)
+
             # move to GPU if necessary
             game_rewards = game_rewards.to(reward_matrices.device)
 
             # what reward did the model actually earn
-            start = time.time()
             model_rewards = game_rewards.gather(-1, preds.unsqueeze(-1))
-            end = time.time()
-            #print("time to compute the reward the model earned", end - start)
-            #breakpoint()
 
             # what is the maximum reward and the associated index
             max_rewards, argmax_rewards = game_rewards.max(-1)
@@ -244,6 +242,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             batch_accuracy_after_agent_i[i].append(accuracy)
 
             losses_for_curr_batch.append(loss)
+
+            if args.learn_from_demos:
+                # generate predictions for the demo games
+                demo_preds = torch.argmax(demo_scores_i, dim=-1)
+                demo_preds_as_one_hot = F.one_hot(demo_preds)
+
+                # concatenate the predictions for the demo set to the actual games
+                prev_demo_i = torch.cat([demo_listener_views, demo_preds_as_one_hot.unsqueeze(-1).float()], dim=-1)
+                
 
         if training:    # use the losses from all the agents
             if args.optimize_jointly:
@@ -279,19 +286,23 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('loss:', metrics['loss_' + str(i)])
         print('accuracy:', metrics['accuracy_' + str(i)])
 
+    
+    # TODO: fix the logging so it works with language or demonstration
     # initialize a DataFrame for logging reward matrices and messages
-    reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
-    message_col_names = ['message_' + str(i) for i in range(num_gens_to_iterate_over)]
-    col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
-    df = pd.DataFrame(data_to_log, columns=col_names)
+    #reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
+    #message_col_names = ['message_' + str(i) for i in range(num_gens_to_iterate_over)]
+    #col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
+    #df = pd.DataFrame(data_to_log, columns=col_names)
+    df = None
     
     return metrics, df
 
 def main():
     args = get_args()
-    if args.learn_from_demo:
+    if args.learn_from_demos:
         agent = DemoAgent(chain_length=args.chain_length,
                             object_encoding_len=args.num_colors + args.num_shapes, 
+                            num_examples_for_demos=args.num_examples_for_demos,
                             num_objects=args.num_colors * args.num_shapes,
                             embedding_dim=args.embedding_size,
                             hidden_size=args.hidden_size)
@@ -342,7 +353,7 @@ def main():
         print('epoch', i)
         start = time.time()
 
-        train_metrics, train_df = run_epoch('train', game, agents, optimizer, args)
+        train_metrics, _ = run_epoch('train', game, agents, optimizer, args)
         val_metrics, val_df = run_epoch('val', game, agents, optimizer, args)
         
         # just save the validation set, and rewrite it after each iter

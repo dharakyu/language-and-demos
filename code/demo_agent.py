@@ -11,7 +11,7 @@ class DemoAgent(nn.Module):
     def __init__(self, chain_length,
                 object_encoding_len=6, num_objects=9,
                 embedding_dim=64, hidden_size=100, 
-                num_examples_in_demo=10,
+                num_examples_for_demos=10,
                 num_choices_in_listener_context=3):
                 
         super().__init__()
@@ -19,7 +19,7 @@ class DemoAgent(nn.Module):
         self.embedding_dim = embedding_dim
         self.hidden_size = hidden_size
 
-        self.num_examples_in_demo = num_examples_in_demo
+        self.num_examples_for_demos = num_examples_for_demos
         self.num_choices_in_listener_context = num_choices_in_listener_context
         self.object_encoding_len = object_encoding_len
 
@@ -40,7 +40,8 @@ class DemoAgent(nn.Module):
                                         nn.ReLU(),
                                         nn.Linear(hidden_size, embedding_dim)
                                 )
-        self.composite_emb_compression_mlp = nn.Linear(embedding_dim * ((object_encoding_len + 1) * num_choices_in_listener_context + num_objects),
+        # input size: (x, y, embedding_dim * (num_examples_for_demos * num_choices_in_lis_context + num_objects))
+        self.composite_emb_compression_mlp = nn.Linear(embedding_dim * (num_examples_for_demos * num_choices_in_listener_context + num_objects),
                                                             embedding_dim)
 
 
@@ -60,14 +61,18 @@ class DemoAgent(nn.Module):
         """
         batch_size = reward_matrices.shape[0]
 
+        # cut off the last element of the reward matrices
+        reward_matrices = reward_matrices[:, :, :-1]
+
         reward_matrix_emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
         reward_matrix_emb = reward_matrix_emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)
 
-        reshaped_demos = demos.view(batch_size, -1)  # (batch_size, num_examples_in_demo * num_choices_in_lis_context, object_encoding_length+1)
-        demos_emb = self.examples_mlp(reshaped_demos)   # (batch_size, num_examples_in_demo * num_choices_in_lis_context, embedding_dim)
-        demos_emb = demos_emb.view(batch_size, -1)   # (batch_size, num_examples_in_demo * num_choices_in_lis_context * embedding_dim)
+        demos = demos.to(reward_matrices.device)    # move to GPU
+        reshaped_demos = demos.view(batch_size, -1, self.object_encoding_len + 1)  # (batch_size, num_examples_for_demos * num_choices_in_lis_context, object_encoding_length+1)
+        demos_emb = self.examples_mlp(reshaped_demos)   # (batch_size, num_examples_for_demos * num_choices_in_lis_context, embedding_dim)
+        demos_emb = demos_emb.view(batch_size, -1)   # (batch_size, embedding_dim * num_examples_for_demos * num_choices_in_lis_context)
 
-        composite_emb = torch.cat([reward_matrix_emb, demos_emb], dim=1)    # (batch_size, embedding_dim * (object_encoding_length+1 * num_choices_in_lis_context + num_objects))
+        composite_emb = torch.cat([reward_matrix_emb, demos_emb], dim=1)    # (batch_size, embedding_dim * (num_examples_for_demos * num_choices_in_lis_context + num_objects))
         reduced_composite_emb = self.composite_emb_compression_mlp(composite_emb)   # (batch_size, embedding_dim)
 
         return reduced_composite_emb
@@ -75,7 +80,8 @@ class DemoAgent(nn.Module):
     def forward(self, 
                 reward_matrices,
                 demos,
-                games
+                games_for_future_demos,
+                games_for_eval
                 ):
         """
         Arguments:
@@ -101,15 +107,21 @@ class DemoAgent(nn.Module):
 
         # if this is the first agent in the chain, there is no demo (represented with just zeros)
         if demos is None:
-            demos = torch.zeros(size=(batch_size, self.num_examples_in_demo, self.num_choices_in_listener_context, self.object_encoding_len+1))
-
+            demos = torch.zeros(size=(batch_size, self.num_examples_for_demos, self.num_choices_in_listener_context, self.object_encoding_len+1))
+        
         reward_matrix_and_demos_emb = self.embed_reward_matrix_and_demos(reward_matrices, demos)
-
+        
         # 2. produce scores over outputs
-        listener_context_emb = self.games_embedding(games.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
-        scores = torch.einsum('bvce,be->bvc', (listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
-        scores = F.log_softmax(scores, dim=-1)
+        # a) for the games that will be used as demos for the next generation
+        demo_listener_context_emb = self.games_embedding(games_for_future_demos.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
+        demo_scores = torch.einsum('bvce,be->bvc', (demo_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
+        demo_scores = F.log_softmax(demo_scores, dim=-1)
 
-        return scores
+        # b) for the games that are used to evaluate performance
+        eval_listener_context_emb = self.games_embedding(games_for_eval.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
+        eval_scores = torch.einsum('bvce,be->bvc', (eval_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
+        eval_scores = F.log_softmax(eval_scores, dim=-1)
+        
+        return demo_scores, eval_scores
 
     

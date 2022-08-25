@@ -146,7 +146,7 @@ class SignalingBanditsGame():
             
         return np.array(listener_views)
 
-    def sample_batch(self, num_listener_views, batch_size=32):
+    def sample_batch(self, num_listener_views, num_examples_for_demos, batch_size=32):
         """
         Sample games for a whole batch
         Arguments:
@@ -158,17 +158,20 @@ class SignalingBanditsGame():
         batch_listener_views: np.array of size (batch_size, self.num_choices, self.num_colors+self.num_shapes)
         """
         batch_reward_matrices = []
-        batch_listener_views = []
+        batch_eval_listener_views = []
+        batch_demo_listener_views = []
         
         for i in range(batch_size):
             reward_matrix = self.sample_reward_matrix()
             #listener_view = self.get_listener_view(reward_matrix)
-            listener_views = self.get_multiple_listener_views(reward_matrix, num_listener_views)
+            eval_listener_views = self.get_multiple_listener_views(reward_matrix, num_listener_views)
+            demo_listener_views = self.get_multiple_listener_views(reward_matrix, num_examples_for_demos)
    
             batch_reward_matrices.append(reward_matrix)
-            batch_listener_views.append(listener_views)
+            batch_eval_listener_views.append(eval_listener_views)
+            batch_demo_listener_views.append(demo_listener_views)
         
-        return np.array(batch_reward_matrices), np.array(batch_listener_views)
+        return np.array(batch_reward_matrices), np.array(batch_eval_listener_views), np.array(batch_demo_listener_views)
 
     def compute_rewards(self, listener_views, reward_matrices):
         """
