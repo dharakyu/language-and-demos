@@ -21,14 +21,11 @@ import copy
 
 import plotly.express as px
 
-def handle_demos(batch_size,
-                i,
-                agent_i,
+def handle_demos(agent_i,
                 agent_view,
                 prev_demo_i,
                 demo_listener_views,
-                eval_listener_views,
-                args
+                eval_listener_views
                 ):
     """
     Helper function for iterated learning in the learning from demos setting
@@ -192,14 +189,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 agent_view = reward_matrices
 
             if args.learn_from_demos:
-                demo_scores_i, scores_i = handle_demos(batch_size,
-                                            i,
-                                            agent_i,
+                demo_scores_i, scores_i = handle_demos(agent_i,
                                             agent_view,
                                             prev_demo_i,
                                             demo_listener_views,
-                                            listener_views,
-                                            args)
+                                            listener_views)
             else:
                 prev_lang_i, lang_i, lang_len_i, scores_i = handle_messages(batch_size,
                                                                 i,

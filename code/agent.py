@@ -12,7 +12,7 @@ class Agent(nn.Module):
                 object_encoding_len=6, num_objects=9,
                 embedding_dim=64, vocab_size=40, hidden_size=100, 
                 softmax_temp=1.0, max_message_len=4,
-                use_discrete_comm=False, view_listener_context=False,
+                use_discrete_comm=False,
                 ingest_multiple_messages=False):
                 
         super().__init__()
@@ -24,11 +24,9 @@ class Agent(nn.Module):
         self.max_message_len = max_message_len
 
         self.use_discrete_comm = use_discrete_comm
-        self.view_listener_context = view_listener_context
 
         self.ingest_multiple_messages = ingest_multiple_messages
 
-        extension = 2 if view_listener_context else 1
         self.num_messages_received = chain_length if ingest_multiple_messages else 1
 
         self.games_embedding =  nn.Sequential(
@@ -38,7 +36,7 @@ class Agent(nn.Module):
                                 )
 
         self.reward_matrix_embedding = nn.Sequential(
-                                            nn.Linear(object_encoding_len + extension, hidden_size),
+                                            nn.Linear(object_encoding_len + 1, hidden_size),
                                             nn.ReLU(),
                                             nn.Linear(hidden_size, embedding_dim)
                                         )
@@ -90,10 +88,6 @@ class Agent(nn.Module):
         emb: torch.Tensor of size (batch_size, embedding_dim * num_objects + max_message_len * vocab_size)
         """
         batch_size = reward_matrices.shape[0]
-
-        if not self.view_listener_context:
-            # trim listener context
-            reward_matrices = reward_matrices[:, :, :-1]
 
         reward_matrix_emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
         reward_matrix_emb = reward_matrix_emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)

@@ -61,9 +61,6 @@ class DemoAgent(nn.Module):
         """
         batch_size = reward_matrices.shape[0]
 
-        # cut off the last element of the reward matrices
-        reward_matrices = reward_matrices[:, :, :-1]
-
         reward_matrix_emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
         reward_matrix_emb = reward_matrix_emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)
 
