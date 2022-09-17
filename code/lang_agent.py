@@ -7,7 +7,7 @@ import numpy as np
 from listener import RNNEncoder
 import data
 
-class Agent(nn.Module):
+class LanguageAgent(nn.Module):
     def __init__(self, chain_length,
                 object_encoding_len=6, num_objects=9,
                 embedding_dim=64, vocab_size=40, hidden_size=100, 

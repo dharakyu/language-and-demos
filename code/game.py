@@ -43,7 +43,7 @@ class SimpleGame():
 class SignalingBanditsGame():
     def __init__(self, num_choices=3, 
                     num_colors=3, num_shapes=3, 
-                    max_color_val=2, max_shape_val=1
+                    max_color_val=6, max_shape_val=3
                 ):
         self.num_choices = num_choices
         self.num_colors = num_colors
@@ -55,15 +55,22 @@ class SignalingBanditsGame():
         color_orderings = list(itertools.permutations(color_utilities))
         shape_orderings = list(itertools.permutations(shape_utilities))
 
-        #all_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
         self.possible_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
         self.num_reward_assignments = len(self.possible_reward_assignments)
+
+        #indices = []
+        #for i in range(self.num_reward_assignments):
+        #    color_assignment, shape_assignment = self.possible_reward_assignments[i]
+        #    if color_assignment == (-6.0, -2.0, 2.0, 6.0):
+        #        indices.append(i)
+        #breakpoint()
+
 
         num_objects = num_colors * num_shapes 
         # all possible listener contexts
         self.combinations = list(itertools.combinations(range(num_objects), r=num_choices))
 
-    def sample_reward_matrix(self):
+    def sample_reward_matrix(self, inductive_bias):
         """
         Generate the reward matrix, to which the speaker will gain access
 
@@ -80,12 +87,14 @@ class SignalingBanditsGame():
         context, then the corresponding row in reward_matrix is [0, 1, 0, 1, 0, 0, 3, 1]
         """
         # determines the reward configuration we are using
-        reward_assignment_idx = np.random.randint(0, self.num_reward_assignments)
+        if inductive_bias:
+            probs = [(1/24) * 0.2] * 24 + [(1/(self.num_reward_assignments-24)) * 0.8] * (self.num_reward_assignments-24)
+            reward_assignment_idx = np.random.choice(self.num_reward_assignments, p=probs)
+        else:
+            reward_assignment_idx = np.random.randint(0, self.num_reward_assignments)
+
         reward_assignment = self.possible_reward_assignments[reward_assignment_idx]
         color_utilities, shape_utilities = reward_assignment
-
-        # determines objects that appear in the listener context
-        #indices = np.random.choice(self.num_colors*self.num_shapes, size=self.num_choices, replace=False)
         
         curr_idx = 0
         reward_matrix = []
@@ -100,10 +109,8 @@ class SignalingBanditsGame():
                 shape_utility = shape_utilities[j]
 
                 embedding = np.concatenate((color_embedding, shape_embedding))
-                #in_listener_context = int(curr_idx in indices)
-                #embedding = np.append(embedding, [color_utility+shape_utility, in_listener_context])
                 embedding = np.append(embedding, [color_utility+shape_utility])
-                #breakpoint()
+                
                 reward_matrix.append(embedding)
 
                 curr_idx += 1
@@ -131,7 +138,7 @@ class SignalingBanditsGame():
             
         return np.array(listener_views)
 
-    def sample_batch(self, num_listener_views, num_examples_for_demos, batch_size=32):
+    def sample_batch(self, num_listener_views, num_examples_for_demos, inductive_bias, batch_size=32):
         """
         Sample games for a whole batch
         Arguments:
@@ -147,7 +154,7 @@ class SignalingBanditsGame():
         batch_demo_listener_views = []
         
         for i in range(batch_size):
-            reward_matrix = self.sample_reward_matrix()
+            reward_matrix = self.sample_reward_matrix(inductive_bias)
             eval_listener_views = self.get_multiple_listener_views(reward_matrix, num_listener_views)
             demo_listener_views = self.get_multiple_listener_views(reward_matrix, num_examples_for_demos)
    
@@ -243,6 +250,11 @@ class SignalingBanditsGame():
             for agent_idx in range(num_views):
                 mask = batch_masks[sample_idx][agent_idx]
                 reward_matrices_views[agent_idx, sample_idx, mask, :] = 0
+
+                # make sure that the first 4 objects are guaranteed to be masked (which means that color 0 is never seen
+                # during training and we can evaluate OOD performance)
+                #if exclude_first_color:
+                #    reward_matrices_views[agent_idx, sample_idx, 0:self.num_shapes, :] = 0
         
         if same_agent_view:
             # repeat the view of the first agent for all the agents
