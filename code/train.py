@@ -3,10 +3,12 @@ from listener import Listener
 from game import SignalingBanditsGame
 from arguments import get_args
 from agent import Agent
+from demo_agent import DemoAgent
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 import numpy as np
 import pandas as pd
@@ -18,6 +20,86 @@ import os
 import copy
 
 import plotly.express as px
+
+def handle_demos(agent_i,
+                agent_view,
+                prev_demo_i,
+                demo_listener_views,
+                eval_listener_views
+                ):
+    """
+    Helper function for iterated learning in the learning from demos setting
+
+    Return:
+    scores_i: torch.Tensor of shape (batch_size, 3)
+    """
+    
+    demo_scores_i, eval_scores_i = agent_i(reward_matrices=agent_view,
+                                            demos=prev_demo_i,
+                                            games_for_future_demos=demo_listener_views,
+                                            games_for_eval=eval_listener_views)
+
+    return demo_scores_i, eval_scores_i
+    
+
+
+def handle_messages(batch_size,
+                    i,
+                    agent_i, 
+                    agent_view, 
+                    prev_lang_i,
+                    lang_i, 
+                    lang_len_i, 
+                    listener_views,
+                    messages_to_log,
+                    reward_matrices_views_to_log,
+                    args):
+    """
+    Helper function to handle the core iterated learning portion of the learning
+    through messages setting
+
+    """
+    # lang_i is shape (batch_size, message_len, vocab_size, num_gens_to_iterate_over)
+    lang_i, lang_len_i, scores_i = agent_i(reward_matrices=agent_view,
+                                                            input_lang=lang_i,
+                                                            input_lang_len=lang_len_i,
+                                                            games=listener_views
+                                                        )
+                
+    # append flattened message produced by agent i
+    flattened_message = lang_i.view(batch_size, -1).cpu().detach().numpy()
+    messages_to_log.append(flattened_message)
+
+    # append flattened view of reward matrices seen by agent i
+    flattened_agent_view = agent_view.view(batch_size, -1).cpu().detach().numpy()
+    reward_matrices_views_to_log.append(flattened_agent_view)
+
+    if args.ingest_multiple_messages:
+        # take lang_i off the gpu and unsqueeze
+        lang_i = lang_i.unsqueeze(-1).cpu()
+        if prev_lang_i is not None: prev_lang_i = prev_lang_i.cpu()
+
+        if prev_lang_i is not None:
+            lang_i = torch.cat([prev_lang_i, lang_i], dim=-1)   # shape (batch_size, message_len, vocab_size, gen_i)
+            # else, there is nothing to append
+
+        # fill up the rest of the message with zeros
+        # note: even when doing chain length extrapolation the message should be size args.chain_length,
+        # not args.train_length
+        empty_message_size = (lang_i.shape[0], lang_i.shape[1], lang_i.shape[2], args.chain_length-i-1)
+        empty_message = torch.zeros(size=empty_message_size)    # shape (batch_size, message_len, vocab_size, gen_i)
+
+
+        lang_i = torch.cat([lang_i, empty_message], dim=-1)
+
+        # only keep the nonzero messages
+        prev_lang_i = lang_i[:, :, :, :i+1]
+
+    if args.cuda:
+        lang_i = lang_i.cuda()
+        if args.discrete_comm: lang_len_i = lang_len_i.cuda()
+
+    return prev_lang_i, lang_i, lang_len_i, scores_i
 
 def run_epoch(dataset_split, game, agents, optimizer, args):
     """
@@ -36,7 +118,6 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_rewards_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
-
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -44,7 +125,9 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_to_log = []
         reward_matrices_views_to_log = []
 
-        reward_matrices, listener_views = game.sample_batch(num_listener_views=args.num_listener_views)
+        reward_matrices, listener_views, demo_listener_views = game.sample_batch(num_listener_views=args.num_listener_views,
+                                                                        num_examples_for_demos=args.num_examples_for_demos)
+
         batch_size = reward_matrices.shape[0]
 
         # append flattened ground truth reward matrix
@@ -54,6 +137,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         # convert reward matrices and listener views to tensors
         reward_matrices = torch.from_numpy(reward_matrices).float()
         listener_views = torch.from_numpy(listener_views).float()
+        demo_listener_views = torch.from_numpy(demo_listener_views).float()
         
         if args.partial_reward_matrix:
             num_utilities_seen_in_training = None
@@ -66,17 +150,21 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                                 same_agent_view=args.same_agent_view,
                                                                                 no_additional_info=args.no_additional_info,
                                                                                 num_utilities_seen_in_training=num_utilities_seen_in_training)
-  
+            
         if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
             listener_views = listener_views.cuda()
+            demo_listener_views = demo_listener_views.cuda()
             
             if args.partial_reward_matrix:
                 reward_matrices_views = reward_matrices_views.cuda()
 
-        prev_lang_i = None
-        lang_i = None
-        lang_len_i = None
+        if args.learn_from_demos:
+            prev_demo_i = None
+        else:
+            prev_lang_i = None
+            lang_i = None
+            lang_len_i = None
 
         losses_for_curr_batch = []
         if training and args.train_chain_length is not None:
@@ -100,51 +188,31 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             else:
                 agent_view = reward_matrices
 
-            # lang_i is shape (batch_size, message_len, vocab_size, num_gens_to_iterate_over)
-            lang_i, lang_len_i, scores_i = agent_i(reward_matrices=agent_view,
-                                                        input_lang=lang_i,
-                                                        input_lang_len=lang_len_i,
-                                                        games=listener_views
-                                                    )
-            
-            # append flattened message produced by agent i
-            flattened_message = lang_i.view(batch_size, -1).cpu().detach().numpy()
-            messages_to_log.append(flattened_message)
-
-            # append flattened view of reward matrices seen by agent i
-            flattened_agent_view = agent_view.view(batch_size, -1).cpu().detach().numpy()
-            reward_matrices_views_to_log.append(flattened_agent_view)
-
-            if args.ingest_multiple_messages:
-                # take lang_i off the gpu and unsqueeze
-                lang_i = lang_i.unsqueeze(-1).cpu()
-                if prev_lang_i is not None: prev_lang_i = prev_lang_i.cpu()
-
-                if prev_lang_i is not None:
-                    lang_i = torch.cat([prev_lang_i, lang_i], dim=-1)   # shape (batch_size, message_len, vocab_size, gen_i)
-                # else, there is nothing to append
-
-                # fill up the rest of the message with zeros
-                # note: even when doing chain length extrapolation the message should be size args.chain_length,
-                # not args.train_length
-                empty_message_size = (lang_i.shape[0], lang_i.shape[1], lang_i.shape[2], args.chain_length-i-1)
-                empty_message = torch.zeros(size=empty_message_size)    # shape (batch_size, message_len, vocab_size, gen_i)
-
-
-                lang_i = torch.cat([lang_i, empty_message], dim=-1)
-
-                # only keep the nonzero messages
-                prev_lang_i = lang_i[:, :, :, :i+1]
-
-            if args.cuda:
-                lang_i = lang_i.cuda()
-                if args.discrete_comm: lang_len_i = lang_len_i.cuda()
+            if args.learn_from_demos:
+                demo_scores_i, scores_i = handle_demos(agent_i,
+                                            agent_view,
+                                            prev_demo_i,
+                                            demo_listener_views,
+                                            listener_views)
+            else:
+                prev_lang_i, lang_i, lang_len_i, scores_i = handle_messages(batch_size,
+                                                                i,
+                                                                agent_i, 
+                                                                agent_view, 
+                                                                prev_lang_i,
+                                                                lang_i, 
+                                                                lang_len_i, 
+                                                                listener_views,
+                                                                messages_to_log,
+                                                                reward_matrices_views_to_log,
+                                                                args)
 
             # get the listener predictions
             preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
-                
+
             # get the rewards associated with the objects in each game
             game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
+
             # move to GPU if necessary
             game_rewards = game_rewards.to(reward_matrices.device)
 
@@ -168,6 +236,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             batch_accuracy_after_agent_i[i].append(accuracy)
 
             losses_for_curr_batch.append(loss)
+
+            if args.learn_from_demos:
+                # generate predictions for the demo games
+                demo_preds = torch.argmax(demo_scores_i, dim=-1)
+                demo_preds_as_one_hot = F.one_hot(demo_preds)
+
+                # concatenate the predictions for the demo set to the actual games
+                prev_demo_i = torch.cat([demo_listener_views, demo_preds_as_one_hot.unsqueeze(-1).float()], dim=-1)
+                
 
         if training:    # use the losses from all the agents
             if args.optimize_jointly:
@@ -203,38 +280,40 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('loss:', metrics['loss_' + str(i)])
         print('accuracy:', metrics['accuracy_' + str(i)])
 
+    
+    # TODO: fix the logging so it works with language or demonstration
     # initialize a DataFrame for logging reward matrices and messages
-    reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
-    message_col_names = ['message_' + str(i) for i in range(num_gens_to_iterate_over)]
-    col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
-    df = pd.DataFrame(data_to_log, columns=col_names)
+    #reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
+    #message_col_names = ['message_' + str(i) for i in range(num_gens_to_iterate_over)]
+    #col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
+    #df = pd.DataFrame(data_to_log, columns=col_names)
+    df = None
     
     return metrics, df
 
 def main():
     args = get_args()
-    
-    if args.use_same_agent:
+    if args.learn_from_demos:
+        agent = DemoAgent(chain_length=args.chain_length,
+                            object_encoding_len=args.num_colors + args.num_shapes, 
+                            num_examples_for_demos=args.num_examples_for_demos,
+                            num_objects=args.num_colors * args.num_shapes,
+                            embedding_dim=args.embedding_size,
+                            hidden_size=args.hidden_size)
+    else:
         agent = Agent(chain_length=args.chain_length,
                         object_encoding_len = args.num_colors + args.num_shapes,
-                        num_objects = args.num_colors * args.num_shapes,
+                        num_objects=args.num_colors * args.num_shapes,
                         hidden_size=args.hidden_size,
                         use_discrete_comm=args.discrete_comm,
                         max_message_len=args.max_message_len,
                         vocab_size=args.vocab_size,
                         ingest_multiple_messages=args.ingest_multiple_messages)
-
+    
+    if args.use_same_agent:
         agents = nn.ModuleList([agent for _ in range(args.chain_length)])
     else:
-        agents = nn.ModuleList([Agent(chain_length=args.chain_length,
-                                    object_encoding_len = args.num_colors + args.num_shapes,
-                                    num_objects = args.num_colors * args.num_shapes,
-                                    hidden_size=args.hidden_size,
-                                    use_discrete_comm=args.discrete_comm,
-                                    max_message_len=args.max_message_len,
-                                    vocab_size=args.vocab_size,
-                                    ingest_multiple_messages=args.ingest_multiple_messages) 
-                                for _ in range(args.chain_length)])
+        agents = nn.ModuleList([copy.deepcopy(agent) for _ in range(args.chain_length)])
 
     if args.cuda:
         agents = nn.ModuleList([agent.cuda() for agent in agents])
@@ -268,7 +347,7 @@ def main():
         print('epoch', i)
         start = time.time()
 
-        train_metrics, train_df = run_epoch('train', game, agents, optimizer, args)
+        train_metrics, _ = run_epoch('train', game, agents, optimizer, args)
         val_metrics, val_df = run_epoch('val', game, agents, optimizer, args)
         
         # just save the validation set, and rewrite it after each iter

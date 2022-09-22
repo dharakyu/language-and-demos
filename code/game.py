@@ -85,7 +85,7 @@ class SignalingBanditsGame():
         color_utilities, shape_utilities = reward_assignment
 
         # determines objects that appear in the listener context
-        indices = np.random.choice(self.num_colors*self.num_shapes, size=self.num_choices, replace=False)
+        #indices = np.random.choice(self.num_colors*self.num_shapes, size=self.num_choices, replace=False)
         
         curr_idx = 0
         reward_matrix = []
@@ -100,38 +100,23 @@ class SignalingBanditsGame():
                 shape_utility = shape_utilities[j]
 
                 embedding = np.concatenate((color_embedding, shape_embedding))
-                in_listener_context = int(curr_idx in indices)
-                embedding = np.append(embedding, [color_utility+shape_utility, in_listener_context])
+                #in_listener_context = int(curr_idx in indices)
+                #embedding = np.append(embedding, [color_utility+shape_utility, in_listener_context])
+                embedding = np.append(embedding, [color_utility+shape_utility])
+                #breakpoint()
                 reward_matrix.append(embedding)
 
                 curr_idx += 1
     
         return np.array(reward_matrix)
 
-    def get_listener_view(self, reward_matrix):
-        """
-        Given a reward matrix, get the corresponding listener view
-
-        Arguments:
-        reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 2)
-
-        Return:
-        listener_view: np.array of size (num_choices, self.num_colors + self.num_shapes)
-        """
-        indices = np.where(reward_matrix[:, -1] == 1)[0]
-        listener_view = reward_matrix[indices, :-2]  # lop off the last two elements
-
-        return listener_view
-
     def get_multiple_listener_views(self, reward_matrix, num_views):
         """
         Given a reward matrix, get the specified number of possible listener views.
         For a default game with 9 objects and 3 objects in the context, the max
         number of possible views is 9 choose 3 = 84
-
         Arguments:
         reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 2)
-
         Return:
         listener_views: np.array of size (num_combinations, num_choices, self.num_colors + self.num_shapes)
         """
@@ -141,12 +126,12 @@ class SignalingBanditsGame():
         listener_views = []
         for idx in indices_of_combinations:
             combo = self.combinations[idx]
-            view = reward_matrix[combo, :-2] # lop off the last two elements
+            view = reward_matrix[combo, :-1] # lop off the last element (the reward)
             listener_views.append(view)
             
         return np.array(listener_views)
 
-    def sample_batch(self, num_listener_views, batch_size=32):
+    def sample_batch(self, num_listener_views, num_examples_for_demos, batch_size=32):
         """
         Sample games for a whole batch
         Arguments:
@@ -154,64 +139,58 @@ class SignalingBanditsGame():
         batch_size: int
 
         Return
-        batch_reward_matrices: np.array of size (batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
+        batch_reward_matrices: np.array of size (batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+1)
         batch_listener_views: np.array of size (batch_size, self.num_choices, self.num_colors+self.num_shapes)
         """
         batch_reward_matrices = []
-        batch_listener_views = []
+        batch_eval_listener_views = []
+        batch_demo_listener_views = []
         
         for i in range(batch_size):
             reward_matrix = self.sample_reward_matrix()
-            #listener_view = self.get_listener_view(reward_matrix)
-            listener_views = self.get_multiple_listener_views(reward_matrix, num_listener_views)
+            eval_listener_views = self.get_multiple_listener_views(reward_matrix, num_listener_views)
+            demo_listener_views = self.get_multiple_listener_views(reward_matrix, num_examples_for_demos)
    
             batch_reward_matrices.append(reward_matrix)
-            batch_listener_views.append(listener_views)
+            batch_eval_listener_views.append(eval_listener_views)
+            batch_demo_listener_views.append(demo_listener_views)
         
-        return np.array(batch_reward_matrices), np.array(batch_listener_views)
-
-    def get_rewards_for_single_game(self, listener_view, reward_matrix):
-        object_rewards = []
-
-        for i in range(self.num_choices):
-            curr_obj = listener_view[i]
-            indices_of_one = torch.where(curr_obj == 1)[0]
-            corresponding_idx = (indices_of_one[0]*self.num_choices) + (indices_of_one[1]-self.num_choices)
-            reward = reward_matrix[corresponding_idx.item(), -2]
-            object_rewards.append(reward)
-
-        return object_rewards
+        return np.array(batch_reward_matrices), np.array(batch_eval_listener_views), np.array(batch_demo_listener_views)
 
     def compute_rewards(self, listener_views, reward_matrices):
         """
         Given a batch of games and model predictions, compute the rewards
 
         Arguments:
-        choices: torch.Tensor of size (batch_size)
         listener_views: np.array of size (batch_size, num_views, self.num_choices, self.num_colors+self.num_shapes)
         reward_matrices: np.array of size (batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+2)
 
         Return:
-        accuracy: np.array of size (batch_size)
+        reshaped_rewards: torch.Tensor of size (batch_size, num_listener_views, self.num_choices)
         """
-        batch_size = listener_views.shape[0]
-        num_views = listener_views.shape[1]
-        batch_rewards = []
-        start = time.time()
-        for i in range(batch_size):
-            game_rewards = []
-            for j in range(num_views):
-                listener_view = listener_views[i, j]
-                reward_matrix = reward_matrices[i]
 
-                rewards = self.get_rewards_for_single_game(listener_view, reward_matrix)
-                game_rewards.append(rewards)
-                
-            batch_rewards.append(game_rewards)
-        end = time.time()
-        #print('time to compute rewards:', end - start)
- 
-        return torch.Tensor(batch_rewards)
+        batch_size = reward_matrices.shape[0]
+        indices_of_ones = listener_views.nonzero()
+        indices_of_ones_combined = indices_of_ones.view(indices_of_ones.shape[0] // 2, -1)
+        # an example row is:
+        # [batch_i, listener_view_j, object_in_context_k, 2, batch_i, listener_view_j, object_in_context_k, 4]
+        # which means that in the ith data point in the batch, for the jth listener_view, for the kth object in the listener context,
+        # there is a 1 at index 2 and index 4
+
+        indices_into_batch = indices_of_ones_combined[:, 0]
+
+        # arithmetic trick to derive the index into the reward matrix
+        indices_into_reward_matrix_row = self.num_colors*indices_of_ones_combined[:, self.num_colors-1] + \
+                                        (indices_of_ones_combined[:, -1]-self.num_shapes)
+
+        # note that we only need the index of the sample in the batch and the row in the reward matrix
+        # and then we pull out the LAST element, which is the reward
+        rewards = reward_matrices[indices_into_batch, indices_into_reward_matrix_row, -1]
+
+        # note: I verified that .view() yields the correct arrangement
+        rewards_reshaped = rewards.view(batch_size, -1, self.num_choices)
+
+        return rewards_reshaped
 
     def generate_masked_reward_matrix_views(self, reward_matrices, 
                                                     chunks, 
