@@ -50,6 +50,8 @@ def get_args():
     parser.add_argument('--learn_from_demos', action='store_true')
     parser.add_argument('--num_examples_for_demos', default=10, type=int)
 
+    parser.add_argument('--inductive_bias', action='store_true')
+
     parser.add_argument('--save_dir', default='/home/dharakyu/signaling-bandits/outputs', type=str)
     parser.add_argument('--save_outputs', action='store_true')
 

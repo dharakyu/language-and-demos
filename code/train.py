@@ -2,7 +2,7 @@ from speaker import Speaker
 from listener import Listener
 from game import SignalingBanditsGame
 from arguments import get_args
-from agent import Agent
+from lang_agent import LanguageAgent
 from demo_agent import DemoAgent
 
 import torch
@@ -89,7 +89,6 @@ def handle_messages(batch_size,
         empty_message_size = (lang_i.shape[0], lang_i.shape[1], lang_i.shape[2], args.chain_length-i-1)
         empty_message = torch.zeros(size=empty_message_size)    # shape (batch_size, message_len, vocab_size, gen_i)
 
-
         lang_i = torch.cat([lang_i, empty_message], dim=-1)
 
         # only keep the nonzero messages
@@ -126,7 +125,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_views_to_log = []
 
         reward_matrices, listener_views, demo_listener_views = game.sample_batch(num_listener_views=args.num_listener_views,
-                                                                        num_examples_for_demos=args.num_examples_for_demos)
+                                                                        num_examples_for_demos=args.num_examples_for_demos,
+                                                                        inductive_bias=(training and args.inductive_bias))
 
         batch_size = reward_matrices.shape[0]
 
@@ -149,8 +149,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                                 num_views=args.chain_length,
                                                                                 same_agent_view=args.same_agent_view,
                                                                                 no_additional_info=args.no_additional_info,
-                                                                                num_utilities_seen_in_training=num_utilities_seen_in_training)
-            
+                                                                                num_utilities_seen_in_training=num_utilities_seen_in_training)    
+        
         if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
             listener_views = listener_views.cuda()
@@ -301,7 +301,7 @@ def main():
                             embedding_dim=args.embedding_size,
                             hidden_size=args.hidden_size)
     else:
-        agent = Agent(chain_length=args.chain_length,
+        agent = LanguageAgent(chain_length=args.chain_length,
                         object_encoding_len = args.num_colors + args.num_shapes,
                         num_objects=args.num_colors * args.num_shapes,
                         hidden_size=args.hidden_size,
