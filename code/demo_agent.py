@@ -122,6 +122,10 @@ class DemoAgent(nn.Module):
         #breakpoint()
         # sample the games that will be used as demos for the next generation
         games_for_future_demos = all_possible_games[:, :self.num_examples_for_demos, :, :]
+
+        # move to gpu
+        games_for_future_demos = games_for_future_demos.to(reward_matrices.device)
+
         demo_listener_context_emb = self.games_embedding(games_for_future_demos.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
         demo_scores = torch.einsum('bvce,be->bvc', (demo_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
         demo_scores = F.log_softmax(demo_scores, dim=-1)

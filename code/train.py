@@ -124,7 +124,10 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_to_log = []
         reward_matrices_views_to_log = []
 
+        start = time.time()
         reward_matrices, games_for_eval, all_possible_games = game.sample_batch(inductive_bias=(training and args.inductive_bias))
+        end = time.time()
+        #print('elapsed', end-start)
 
         batch_size = reward_matrices.shape[0]
 
@@ -152,7 +155,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
             games_for_eval = games_for_eval.cuda()
-            all_possible_games = all_possible_games.cuda()
+            #all_possible_games = all_possible_games.cuda()
             
             if args.partial_reward_matrix:
                 reward_matrices_views = reward_matrices_views.cuda()
