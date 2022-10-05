@@ -4,7 +4,6 @@ from game import SignalingBanditsGame
 from arguments import get_args
 from lang_agent import LanguageAgent
 from demo_agent import DemoAgent
-from pedagogical_demo_agent import PedagogicalDemoAgent
 
 import torch
 import torch.nn as nn
