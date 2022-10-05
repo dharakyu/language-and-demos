@@ -44,6 +44,8 @@ class DemoAgent(nn.Module):
         self.composite_emb_compression_mlp = nn.Linear(embedding_dim * (num_examples_for_demos * num_choices_in_listener_context + num_objects),
                                                             embedding_dim)
 
+        self.pedagogical_sampling = False
+
 
     def embed_reward_matrix_and_demos(self,
                                         reward_matrices,
@@ -119,9 +121,13 @@ class DemoAgent(nn.Module):
         reward_matrix_and_demos_emb = self.embed_reward_matrix_and_demos(reward_matrices, demos)
         
         # 2. Produce demos for the next generation
-        #breakpoint()
         # sample the games that will be used as demos for the next generation
-        games_for_future_demos = all_possible_games[:, :self.num_examples_for_demos, :, :]
+        if self.pedagogical_sampling:
+            pass
+        else:
+            num_possible_games = all_possible_games.shape[1]
+            random_indices = np.random.choice(a=num_possible_games, size=self.num_examples_for_demos, replace=False) 
+            games_for_future_demos = all_possible_games[:, random_indices, :, :]
 
         # move to gpu
         games_for_future_demos = games_for_future_demos.to(reward_matrices.device)
