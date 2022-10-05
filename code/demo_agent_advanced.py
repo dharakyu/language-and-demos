@@ -7,7 +7,7 @@ import numpy as np
 from listener import RNNEncoder
 import data
 
-class DemoAgent(nn.Module):
+class PedagogicalDemoAgent(nn.Module):
     def __init__(self, chain_length,
                 object_encoding_len=6, num_objects=9,
                 embedding_dim=64, hidden_size=100, 
@@ -77,25 +77,16 @@ class DemoAgent(nn.Module):
     def forward(self, 
                 reward_matrices,
                 demos,
-                all_possible_games,
+                games_for_future_demos,
                 games_for_eval
                 ):
         """
         Arguments:
-        reward_matrices: 
-            The batchwise reward matrices seen by the agent
-            torch.Tensor of size (batch_size, num_objects, object_encoding_length+1)
+        reward_matrices: torch.Tensor of size (batch_size, num_objects, object_encoding_length+1)
         demos:
-            The batchwise demos seen by the agent
             if this is the first agent in the chain, this is None
             torch.Tensor of size (batch_size, num_examples_in_demo, num_choices_in_lis_context, object_encoding_length+1)
-        games_for_future_demos: 
-            These are the games for which the agent makes a prediction, and the game/prediction combos are used
-            as demonstrations for the next generation. This SHOULD be all the possible games (and then we can sample
-            it down to a few to pass on, either through random or pedagogical selection)
-            torch.Tensor of size (batch_size, num_games_to_eval, num_choices_in_lis_context, object_encoding_len)
-        games_for_eval:
-            These are the games that are used to evaluate the 
+        games: torch.Tensor of size (batch_size, num_games_to_eval, num_choices_in_lis_context, object_encoding_len)
 
         Return:
         output_lang:
@@ -106,6 +97,12 @@ class DemoAgent(nn.Module):
             else: None
         scores: torch.Tensor of size (batch_size, num_views, num_choices)
 
+        Here's the approach:
+        1. Encode all the possible demos
+        2. Select a single demo (choice) using GS
+        3. Return choice and pass it to the student
+        4. Encode all the possible demos in the student
+        5. Only show the student the teacher's choice
         """
         batch_size = reward_matrices.shape[0]
 
@@ -115,29 +112,20 @@ class DemoAgent(nn.Module):
         if demos is None:
             demos = torch.zeros(size=(batch_size, self.num_examples_for_demos, self.num_choices_in_listener_context, self.object_encoding_len+1))
         
-        # this representation is used to "help" agents decide which objects to pick
         reward_matrix_and_demos_emb = self.embed_reward_matrix_and_demos(reward_matrices, demos)
         
-        # 2. Produce demos for the next generation
-        #breakpoint()
-        # sample the games that will be used as demos for the next generation
-        games_for_future_demos = all_possible_games[:, :self.num_examples_for_demos, :, :]
+        # 2. produce scores over outputs
+        # a) for the games that will be used as demos for the next generation
         demo_listener_context_emb = self.games_embedding(games_for_future_demos.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
         demo_scores = torch.einsum('bvce,be->bvc', (demo_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
         demo_scores = F.log_softmax(demo_scores, dim=-1)
+        choice = F.gumbel_softmax(demo_scores)
 
-        # generate predictions for the demo games
-        demo_preds = torch.argmax(demo_scores, dim=-1)
-        demo_preds_as_one_hot = F.one_hot(demo_preds)
-
-        # concatenate the predictions for the demo set to the actual games
-        demos_for_next_gen = torch.cat([games_for_future_demos, demo_preds_as_one_hot.unsqueeze(-1).float()], dim=-1)
-
-        # 3. produce scores over outputs for the games that are used to evaluate performance
+        # b) for the games that are used to evaluate performance
         eval_listener_context_emb = self.games_embedding(games_for_eval.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
         eval_scores = torch.einsum('bvce,be->bvc', (eval_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
         eval_scores = F.log_softmax(eval_scores, dim=-1)
         
-        return demos_for_next_gen, eval_scores
+        return choice, eval_scores
 
     
