@@ -294,6 +294,7 @@ def main():
     args = get_args()
     if args.learn_from_demos:
         agent = DemoAgent(chain_length=args.chain_length,
+                            pedagogical_sampling=args.pedagogical_sampling,
                             object_encoding_len=args.num_colors + args.num_shapes, 
                             num_examples_for_demos=args.num_examples_for_demos,
                             num_objects=args.num_colors * args.num_shapes,
