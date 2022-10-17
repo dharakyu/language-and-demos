@@ -138,7 +138,7 @@ class DemoAgent(nn.Module):
 
             # part a)
             # move to gpu
-            all_possible_games = all_possible_games.to(reward_matrices.device)
+            all_possible_games = all_possible_games.to(reward_matrices.device)  # (batch_size, num_examples_for_demo, num_choices_in_listener_context, obj_encoding_len)
             all_games_listener_context_emb = self.games_embedding(all_possible_games.float())
             game_scores = torch.einsum('bvce,be->bvc', (all_games_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
             game_scores = F.log_softmax(game_scores, dim=-1)
@@ -148,29 +148,32 @@ class DemoAgent(nn.Module):
             game_preds_as_one_hot = F.one_hot(game_preds, num_classes=self.num_choices_in_listener_context)
 
             # part c)
-            # (32, 560, 3, 8) -> (32, 560, (3*8))
             batch_size = all_possible_games.shape[0]
             num_possible_games = all_possible_games.shape[1]
-            all_possible_games = all_possible_games.view(batch_size, num_possible_games, -1)
-            
-            all_possible_demos = torch.cat([all_possible_games, game_preds_as_one_hot.float()], dim=-1)
+
+            # size (batch_size, 560, num_choices_in_listener_context, obj_encoding_len+1)
+            all_possible_demos = torch.cat([all_possible_games, game_preds_as_one_hot.unsqueeze(-1).float()], dim=-1)
+
+            # size (batch_size, 560, num_choices_in_listener_context*(obj_encoding_len+1))
+            all_possible_demos = all_possible_demos.view(batch_size, num_possible_games, -1)
 
             # part d)
-            # (32, 560, (3*8)+3) -> (32, 560, 64)
+            # (batch_size, 560, num_choices_in_listener_context*(obj_encoding_len+1)) -> (batch_size, 560, embedding_dim)
             all_demos_emb = self.teacher_demo_encoding_mlp(all_possible_demos)
 
             # part e)
-            # (32, 560, 64) x (32, 64) -> (32, 560)
+            # (batch_size, 560, embedding_dim) x (batch_size, embedding_dim) -> (batch_size, 560)
             demo_prob_scores = torch.einsum('bde, be->bd', (all_demos_emb, reward_matrix_and_demos_emb))
             demo_prob_scores = F.log_softmax(demo_prob_scores, dim=-1)
 
             # part f)
-            choice = F.gumbel_softmax(demo_prob_scores, dim=-1, hard=True)
+            choice = F.gumbel_softmax(demo_prob_scores, dim=-1, hard=True)  # (batch_size, 560)
 
             demos_for_next_gen = all_possible_demos * choice.unsqueeze(-1)  # (batch_size, 560, 27) * (batch_size, 560, 1)
-            demos_for_next_gen = demos_for_next_gen.view(batch_size, num_possible_games, self.num_choices_in_listener_context, -1)  # (32, 560, 3, 9)
-            demos_for_next_gen = torch.zeros_like(demos_for_next_gen)
-            #breakpoint()
+            demos_for_next_gen = demos_for_next_gen.view(batch_size, num_possible_games, self.num_choices_in_listener_context, -1)  # (batch_size, 560, 3, 9)
+
+            demos_for_next_gen = demos_for_next_gen[choice.bool()]  # (batch_size, 3, 9)
+            demos_for_next_gen = demos_for_next_gen.unsqueeze(1)    # (batch_size, 1, 3, 9)
 
         else:
             # in the random sample condition, our approach is to:
