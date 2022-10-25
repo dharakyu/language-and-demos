@@ -11,12 +11,14 @@ class DemoAgent(nn.Module):
     def __init__(self, chain_length,
                 pedagogical_sampling,
                 object_encoding_len=8, num_objects=16,
-                embedding_dim=64, hidden_size=100, 
+                num_intermediate_features=1024,
+                embedding_dim=64, hidden_size=1200, 
                 num_examples_for_demos=10,
                 num_choices_in_listener_context=3):
                 
         super().__init__()
         assert embedding_dim % 2 == 0, "input dim must be divisible by 2"
+        self.num_intermediate_features = num_intermediate_features
         self.embedding_dim = embedding_dim
         self.hidden_size = hidden_size
 
@@ -30,19 +32,22 @@ class DemoAgent(nn.Module):
                                     nn.Linear(hidden_size, embedding_dim)
                                 )
 
+        reward_matrix_mlp_input_dim = num_objects * (object_encoding_len + 1)
         self.reward_matrix_embedding = nn.Sequential(
-                                            nn.Linear(object_encoding_len + 1, hidden_size),
+                                            nn.Linear(reward_matrix_mlp_input_dim, hidden_size),
                                             nn.ReLU(),
-                                            nn.Linear(hidden_size, embedding_dim)
+                                            nn.Linear(hidden_size, num_intermediate_features)
                                         )
 
+        # input dim: (num_demos * num_choices_in_listener_context * (object_encoding_len + 1))
+        examples_mlp_input_dim = num_examples_for_demos * num_choices_in_listener_context * (object_encoding_len+1)
         self.examples_mlp = nn.Sequential(
-                                        nn.Linear(object_encoding_len + 1, hidden_size),
+                                        nn.Linear(examples_mlp_input_dim, hidden_size),
                                         nn.ReLU(),
-                                        nn.Linear(hidden_size, embedding_dim)
+                                        nn.Linear(hidden_size, num_intermediate_features)
                                 )
         # input size: (x, y, embedding_dim * (num_examples_for_demos * num_choices_in_lis_context + num_objects))
-        self.composite_emb_compression_mlp = nn.Linear(embedding_dim * (num_examples_for_demos * num_choices_in_listener_context + num_objects),
+        self.composite_emb_compression_mlp = nn.Linear(2 * num_intermediate_features,
                                                             embedding_dim)
 
         self.pedagogical_sampling = pedagogical_sampling
@@ -68,15 +73,15 @@ class DemoAgent(nn.Module):
         """
         batch_size = reward_matrices.shape[0]
         
-        reward_matrix_emb = self.reward_matrix_embedding(reward_matrices)  # (batch_size, num_objects, embedding_dim)
-        reward_matrix_emb = reward_matrix_emb.view(batch_size, -1)    # (batch_size, embedding_dim * num_objects)
+        reward_matrices_reshaped = reward_matrices.view(batch_size, -1)
+        reward_matrix_emb = self.reward_matrix_embedding(reward_matrices_reshaped)  # (batch_size, num_intermediate_features)
 
         demos = demos.to(reward_matrices.device)    # move to GPU
-        reshaped_demos = demos.view(batch_size, -1, self.object_encoding_len + 1)  # (batch_size, num_examples_for_demos * num_choices_in_lis_context, object_encoding_length+1)
-        demos_emb = self.examples_mlp(reshaped_demos)   # (batch_size, num_examples_for_demos * num_choices_in_lis_context, embedding_dim)
-        demos_emb = demos_emb.view(batch_size, -1)   # (batch_size, embedding_dim * num_examples_for_demos * num_choices_in_lis_context)
-
-        composite_emb = torch.cat([reward_matrix_emb, demos_emb], dim=1)    # (batch_size, embedding_dim * (num_examples_for_demos * num_choices_in_lis_context + num_objects))
+        reshaped_demos = demos.view(batch_size, -1)  # (batch_size, num_examples_for_demos * num_choices_in_lis_context * (object_encoding_length+1))
+        demos_emb = self.examples_mlp(reshaped_demos)   # (batch_size, num_intermediate_features)
+        
+        composite_emb = torch.cat([reward_matrix_emb, demos_emb], dim=1)    # (batch_size, 2*num_intermediate_features)
+        
         reduced_composite_emb = self.composite_emb_compression_mlp(composite_emb)   # (batch_size, embedding_dim)
 
         return reduced_composite_emb
