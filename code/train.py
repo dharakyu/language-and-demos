@@ -297,9 +297,8 @@ def main():
                             pedagogical_sampling=args.pedagogical_sampling,
                             object_encoding_len=args.num_colors + args.num_shapes, 
                             num_examples_for_demos=args.num_examples_for_demos,
-                            num_objects=args.num_colors * args.num_shapes,
-                            embedding_dim=args.embedding_size,
-                            hidden_size=args.hidden_size)
+                            num_objects=args.num_colors * args.num_shapes
+                        )
     else:
         agent = LanguageAgent(chain_length=args.chain_length,
                         object_encoding_len = args.num_colors + args.num_shapes,
