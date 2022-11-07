@@ -24,8 +24,8 @@ import plotly.express as px
 def handle_demos(agent_i,
                 agent_view,
                 prev_demo_i,
-                demo_listener_views,
-                eval_listener_views
+                all_possible_games,
+                games_for_eval
                 ):
     """
     Helper function for iterated learning in the learning from demos setting
@@ -36,11 +36,10 @@ def handle_demos(agent_i,
     
     demo_scores_i, eval_scores_i = agent_i(reward_matrices=agent_view,
                                             demos=prev_demo_i,
-                                            games_for_future_demos=demo_listener_views,
-                                            games_for_eval=eval_listener_views)
+                                            all_possible_games=all_possible_games,
+                                            games_for_eval=games_for_eval)
 
     return demo_scores_i, eval_scores_i
-    
 
 
 def handle_messages(batch_size,
@@ -50,7 +49,7 @@ def handle_messages(batch_size,
                     prev_lang_i,
                     lang_i, 
                     lang_len_i, 
-                    listener_views,
+                    games_for_eval,
                     messages_to_log,
                     reward_matrices_views_to_log,
                     args):
@@ -63,7 +62,7 @@ def handle_messages(batch_size,
     lang_i, lang_len_i, scores_i = agent_i(reward_matrices=agent_view,
                                                             input_lang=lang_i,
                                                             input_lang_len=lang_len_i,
-                                                            games=listener_views
+                                                            games=games_for_eval
                                                         )
                 
     # append flattened message produced by agent i
@@ -124,9 +123,10 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_to_log = []
         reward_matrices_views_to_log = []
 
-        reward_matrices, listener_views, demo_listener_views = game.sample_batch(num_listener_views=args.num_listener_views,
-                                                                        num_examples_for_demos=args.num_examples_for_demos,
-                                                                        inductive_bias=(training and args.inductive_bias))
+        start = time.time()
+        reward_matrices, games_for_eval, all_possible_games = game.sample_batch(inductive_bias=(training and args.inductive_bias))
+        end = time.time()
+        #print('elapsed', end-start)
 
         batch_size = reward_matrices.shape[0]
 
@@ -136,8 +136,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
         # convert reward matrices and listener views to tensors
         reward_matrices = torch.from_numpy(reward_matrices).float()
-        listener_views = torch.from_numpy(listener_views).float()
-        demo_listener_views = torch.from_numpy(demo_listener_views).float()
+        games_for_eval = torch.from_numpy(games_for_eval).float()
+        all_possible_games = torch.from_numpy(all_possible_games).float()
         
         if args.partial_reward_matrix:
             num_utilities_seen_in_training = None
@@ -153,8 +153,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         
         if args.cuda:   # move to GPU
             reward_matrices = reward_matrices.cuda()
-            listener_views = listener_views.cuda()
-            demo_listener_views = demo_listener_views.cuda()
+            games_for_eval = games_for_eval.cuda()
+            #all_possible_games = all_possible_games.cuda()
             
             if args.partial_reward_matrix:
                 reward_matrices_views = reward_matrices_views.cuda()
@@ -189,11 +189,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 agent_view = reward_matrices
 
             if args.learn_from_demos:
-                demo_scores_i, scores_i = handle_demos(agent_i,
+                demo_i, scores_i = handle_demos(agent_i,
                                             agent_view,
                                             prev_demo_i,
-                                            demo_listener_views,
-                                            listener_views)
+                                            all_possible_games,
+                                            games_for_eval)
+
+                # update the demos for the next generation to ingest
+                prev_demo_i = demo_i
+                #breakpoint()
             else:
                 prev_lang_i, lang_i, lang_len_i, scores_i = handle_messages(batch_size,
                                                                 i,
@@ -202,7 +206,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                 prev_lang_i,
                                                                 lang_i, 
                                                                 lang_len_i, 
-                                                                listener_views,
+                                                                games_for_eval,
                                                                 messages_to_log,
                                                                 reward_matrices_views_to_log,
                                                                 args)
@@ -211,7 +215,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
 
             # get the rewards associated with the objects in each game
-            game_rewards = game.compute_rewards(listener_views, reward_matrices)  # (batch_size, num_choices)
+            game_rewards = game.compute_rewards(games_for_eval, reward_matrices)  # (batch_size, num_choices)
 
             # move to GPU if necessary
             game_rewards = game_rewards.to(reward_matrices.device)
@@ -238,12 +242,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             losses_for_curr_batch.append(loss)
 
             if args.learn_from_demos:
-                # generate predictions for the demo games
-                demo_preds = torch.argmax(demo_scores_i, dim=-1)
-                demo_preds_as_one_hot = F.one_hot(demo_preds)
-
-                # concatenate the predictions for the demo set to the actual games
-                prev_demo_i = torch.cat([demo_listener_views, demo_preds_as_one_hot.unsqueeze(-1).float()], dim=-1)
+                pass
                 
 
         if training:    # use the losses from all the agents
@@ -295,11 +294,11 @@ def main():
     args = get_args()
     if args.learn_from_demos:
         agent = DemoAgent(chain_length=args.chain_length,
+                            pedagogical_sampling=args.pedagogical_sampling,
                             object_encoding_len=args.num_colors + args.num_shapes, 
                             num_examples_for_demos=args.num_examples_for_demos,
-                            num_objects=args.num_colors * args.num_shapes,
-                            embedding_dim=args.embedding_size,
-                            hidden_size=args.hidden_size)
+                            num_objects=args.num_colors * args.num_shapes
+                        )
     else:
         agent = LanguageAgent(chain_length=args.chain_length,
                         object_encoding_len = args.num_colors + args.num_shapes,

@@ -3,6 +3,8 @@ import itertools
 import torch
 import time
 
+import math
+
 class SimpleGame():
     def __init__(self, num_choices=3):
         self.num_choices = num_choices
@@ -43,7 +45,8 @@ class SimpleGame():
 class SignalingBanditsGame():
     def __init__(self, num_choices=3, 
                     num_colors=3, num_shapes=3, 
-                    max_color_val=6, max_shape_val=3
+                    max_color_val=6, max_shape_val=3,
+                    num_games_for_eval=1
                 ):
         self.num_choices = num_choices
         self.num_colors = num_colors
@@ -58,17 +61,12 @@ class SignalingBanditsGame():
         self.possible_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
         self.num_reward_assignments = len(self.possible_reward_assignments)
 
-        #indices = []
-        #for i in range(self.num_reward_assignments):
-        #    color_assignment, shape_assignment = self.possible_reward_assignments[i]
-        #    if color_assignment == (-6.0, -2.0, 2.0, 6.0):
-        #        indices.append(i)
-        #breakpoint()
-
-
-        num_objects = num_colors * num_shapes 
         # all possible listener contexts
-        self.combinations = list(itertools.combinations(range(num_objects), r=num_choices))
+        num_unique_objects = num_colors * num_shapes 
+        self.combinations = list(itertools.combinations(range(num_unique_objects), r=num_choices))
+
+        # fix the number of unique games on which we evaluate each agent's accuracy
+        self.num_games_for_eval = num_games_for_eval
 
     def sample_reward_matrix(self, inductive_bias):
         """
@@ -117,52 +115,36 @@ class SignalingBanditsGame():
     
         return np.array(reward_matrix)
 
-    def get_multiple_listener_views(self, reward_matrix, num_views):
-        """
-        Given a reward matrix, get the specified number of possible listener views.
-        For a default game with 9 objects and 3 objects in the context, the max
-        number of possible views is 9 choose 3 = 84
-        Arguments:
-        reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 2)
-        Return:
-        listener_views: np.array of size (num_combinations, num_choices, self.num_colors + self.num_shapes)
-        """
-        
-        indices_of_combinations = np.random.choice(a=len(self.combinations), size=num_views, replace=False)
-
-        listener_views = []
-        for idx in indices_of_combinations:
-            combo = self.combinations[idx]
-            view = reward_matrix[combo, :-1] # lop off the last element (the reward)
-            listener_views.append(view)
-            
-        return np.array(listener_views)
-
-    def sample_batch(self, num_listener_views, num_examples_for_demos, inductive_bias, batch_size=32):
+    def sample_batch(self, inductive_bias, batch_size=32):
         """
         Sample games for a whole batch
         Arguments:
-        num_listener_views: int
+        inductive_bias: Boolean
         batch_size: int
 
         Return
         batch_reward_matrices: np.array of size (batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+1)
-        batch_listener_views: np.array of size (batch_size, self.num_choices, self.num_colors+self.num_shapes)
+        batch_eval_listener_views: np.array of size (batch_size, self.num_games_for_eval, self.num_choices, self.num_colors+self.num_shapes)
+        batch_all_listener_views: np.array of size (batch_size, len(self.combinations), self.num_choices, self.num_colors+self.num_shapes)
         """
+
         batch_reward_matrices = []
         batch_eval_listener_views = []
-        batch_demo_listener_views = []
+        batch_all_listener_views = []
         
         for i in range(batch_size):
             reward_matrix = self.sample_reward_matrix(inductive_bias)
-            eval_listener_views = self.get_multiple_listener_views(reward_matrix, num_listener_views)
-            demo_listener_views = self.get_multiple_listener_views(reward_matrix, num_examples_for_demos)
-   
+ 
+            all_listener_views = reward_matrix[self.combinations][:, :, :-1]
+
+            random_indices = np.random.choice(a=len(self.combinations), size=self.num_games_for_eval, replace=False) 
+            eval_listener_views = all_listener_views[random_indices, ...]
+
             batch_reward_matrices.append(reward_matrix)
             batch_eval_listener_views.append(eval_listener_views)
-            batch_demo_listener_views.append(demo_listener_views)
+            batch_all_listener_views.append(all_listener_views)
         
-        return np.array(batch_reward_matrices), np.array(batch_eval_listener_views), np.array(batch_demo_listener_views)
+        return np.array(batch_reward_matrices), np.array(batch_eval_listener_views), np.array(batch_all_listener_views)
 
     def compute_rewards(self, listener_views, reward_matrices):
         """

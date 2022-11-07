@@ -30,7 +30,6 @@ def get_args():
     parser.add_argument('--vocab_size', default=80, type=int)
 
     parser.add_argument('--chain_length', default=2, type=int)
-    parser.add_argument('--num_listener_views', default=1, type=int)    # how many unique listener contexts are seen by an agent at each gen
 
     parser.add_argument('--partial_reward_matrix', action='store_true')
     parser.add_argument('--use_same_agent', action='store_true')    # option to use the same agent for all the agents in the chain
@@ -49,6 +48,8 @@ def get_args():
 
     parser.add_argument('--learn_from_demos', action='store_true')
     parser.add_argument('--num_examples_for_demos', default=10, type=int)
+
+    parser.add_argument('--pedagogical_sampling', action='store_true')
 
     parser.add_argument('--inductive_bias', action='store_true')
 
