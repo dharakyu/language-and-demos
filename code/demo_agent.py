@@ -62,8 +62,17 @@ class DemoAgent(nn.Module):
         self.pedagogical_sampling = pedagogical_sampling
 
         if self.pedagogical_sampling:
-            input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
-            self.teacher_demo_encoding_mlp = nn.Linear(input_dim, embedding_dim)
+            NUM_POSSIBLE_DEMOS = 560
+            input_size = NUM_POSSIBLE_DEMOS*self.num_choices_in_listener_context*(self.object_encoding_len+1)
+            self.all_demos_embedding = nn.Linear(input_size, hidden_size)
+
+            # TODO: delete this chunk
+            #input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
+            #self.teacher_demo_encoding_mlp = nn.Linear(input_dim, embedding_dim)
+            
+            self.onehot_embedding = nn.Linear(NUM_POSSIBLE_DEMOS, self.embedding_dim)
+            self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
+            self.outputs2demos = nn.Linear(self.hidden_size, NUM_POSSIBLE_DEMOS)
 
 
     def embed_reward_matrix_and_demos(self,
@@ -147,10 +156,13 @@ class DemoAgent(nn.Module):
             # a) evaluate the current agent on all possible (560) games
             # b) get the predictions
             # c) tack the games and predictions together to create a tensor of all possible demos
-            # d) embed all possible demos with self.teacher_demo_encoder_mlp
-            # e) compute a dot product between that embedding, and reward_matrix_and_demos_emb
-            # to get a probability score over all the demos
-            # f) Gumbel-Softmax the probability score vector
+            # d) create an embedding representation of all the demos (this is states) and a representation
+            # of the previously selected demo, which is just zeros for now (this is inputs)
+            # for i in range(num_examples_for_demo):
+            #   e) embed all possible demos with self.gru(inputs, states) - this yields outputs and hidden
+            #   f) embed outputs to be the same size as the number of possible demos
+            #   g) use Gumbel-Softmax to convert outputs to a onehot vector
+            #   h) update the new inputs to be the embedded representation of that onehot vector
 
             # part a)
             # move to gpu
@@ -170,26 +182,48 @@ class DemoAgent(nn.Module):
             # size (batch_size, 560, num_choices_in_listener_context, obj_encoding_len+1)
             all_possible_demos = torch.cat([all_possible_games, game_preds_as_one_hot.unsqueeze(-1).float()], dim=-1)
 
+            # part d)
             # size (batch_size, 560, num_choices_in_listener_context*(obj_encoding_len+1))
             all_possible_demos = all_possible_demos.view(batch_size, num_possible_games, -1)
 
-            # part d)
-            # (batch_size, 560, num_choices_in_listener_context*(obj_encoding_len+1)) -> (batch_size, 560, embedding_dim)
-            all_demos_emb = self.teacher_demo_encoding_mlp(all_possible_demos)
+            reshaped_all_possible_demos = all_possible_demos.view(batch_size, -1)
+            all_demos_emb = self.all_demos_embedding(reshaped_all_possible_demos)    # (batch_size, self.embedding_dim)
+            all_demos_emb = all_demos_emb.unsqueeze(0)  # (1, batch_size, self.embedding_dim)
+            states = all_demos_emb  # rename this to make it clear that we are passing this into the gru
 
-            # part e)
-            # (batch_size, 560, embedding_dim) x (batch_size, embedding_dim) -> (batch_size, 560)
-            demo_prob_scores = torch.einsum('bde, be->bd', (all_demos_emb, reward_matrix_and_demos_emb))
-            demo_prob_scores = F.log_softmax(demo_prob_scores, dim=-1)
+            #breakpoint()
+            # this is the dummy input to pass in for the first iteration
+            inputs = torch.zeros((1, batch_size, self.embedding_dim))
+            inputs = inputs.to(reward_matrices.device)  # move to gpu
 
-            # part f)
-            choice = F.gumbel_softmax(demo_prob_scores, dim=-1, hard=True)  # (batch_size, 560)
+            # this is where we store all the demos that will be passed to the next generation of agents
+            demos_for_next_gen = torch.zeros((batch_size, self.num_examples_for_demos, self.num_choices_in_listener_context, self.object_encoding_len+1))
 
-            demos_for_next_gen = all_possible_demos * choice.unsqueeze(-1)  # (batch_size, 560, 27) * (batch_size, 560, 1)
-            demos_for_next_gen = demos_for_next_gen.view(batch_size, num_possible_games, self.num_choices_in_listener_context, -1)  # (batch_size, 560, 3, 9)
+            masked_indices = []
+            for j in range(self.num_examples_for_demos):
+                
+                
+                # inputs needs to be size (1, batch_size, hidden_size)
+                # states needs to be size (1, batch_size, embedding_dim)
+                outputs, states = self.gru(inputs, states)  # (1, batch_size, hidden_size)
+                outputs = outputs.squeeze(0)    # (batch_size, hidden_size)
+                outputs = self.outputs2demos(outputs)   # (batch_size, num_demos)
 
-            demos_for_next_gen = demos_for_next_gen[choice.bool()]  # (batch_size, 3, 9)
-            demos_for_next_gen = demos_for_next_gen.unsqueeze(1)    # (batch_size, 1, 3, 9)
+                # TODO: mask the indices of the demos we already selected
+
+                # do Gumbel-Softmax
+                predicted_onehot = F.gumbel_softmax(outputs, hard=True) # (batch_size, 560)
+
+                demo_j = all_possible_demos * predicted_onehot.unsqueeze(-1)  # (batch_size, 560, 27) * (batch_size, 560, 1)
+                demo_j = demo_j.view(batch_size, num_possible_games, self.num_choices_in_listener_context, -1)  # (batch_size, 560, 3, 9)
+
+                demo_j = demo_j[predicted_onehot.bool()]  # (batch_size, 3, 9)
+                demos_for_next_gen[:, j, :, :] = demo_j
+
+                # update inputs by pushing the predicted onehot encoding through self.onehot_embedding
+                predicted_onehot_unsqueezed = predicted_onehot.unsqueeze(0) # (1, batch_size, 560)
+                new_inputs = self.onehot_embedding(predicted_onehot_unsqueezed)     # (1, batch_size, hidden_size)
+                inputs = new_inputs
 
         else:
             # in the random sample condition, our approach is to:

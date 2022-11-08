@@ -132,7 +132,7 @@ class LanguageAgent(nn.Module):
         lang_tensor: torch.Tensor of size (batch_size, max_message_len, vocab_size)
         lang_len: torch.Tensor of size (batch_size,)
         """
-
+        breakpoint()
         batch_size = emb.shape[0]
 
         states = self.init_h(emb)
@@ -166,6 +166,7 @@ class LanguageAgent(nn.Module):
         for i in range(self.max_message_len - 2):  # Have room for SOS, EOS if never sampled
             # FIXME: This is inefficient since I do sampling even if we've
             # finished generating language.
+            breakpoint()
             if all(done_sampling):
                 break
             
