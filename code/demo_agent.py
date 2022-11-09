@@ -12,10 +12,10 @@ class DemoAgent(nn.Module):
                 pedagogical_sampling,
                 object_encoding_len=8, num_objects=16,
                 num_intermediate_features=100,
-                embedding_dim=64, hidden_size=120, 
+                embedding_dim=64, hidden_size=120,
                 num_examples_for_demos=10,
                 num_choices_in_listener_context=3):
-                
+
         super().__init__()
         assert embedding_dim % 2 == 0, "input dim must be divisible by 2"
         self.num_intermediate_features = num_intermediate_features
@@ -63,16 +63,19 @@ class DemoAgent(nn.Module):
 
         if self.pedagogical_sampling:
             NUM_POSSIBLE_DEMOS = 560
-            input_size = NUM_POSSIBLE_DEMOS*self.num_choices_in_listener_context*(self.object_encoding_len+1)
-            self.all_demos_embedding = nn.Linear(input_size, hidden_size)
+            #  demo_size = self.num_choices_in_listener_context * (self.object_encoding_len + 1)
+            #  self.all_demos_embedding = nn.Linear(input_size, hidden_size)
 
             # TODO: delete this chunk
-            #input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
-            #self.teacher_demo_encoding_mlp = nn.Linear(input_dim, embedding_dim)
-            
+            demo_input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
+            self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.embedding_dim)
+
             self.onehot_embedding = nn.Linear(NUM_POSSIBLE_DEMOS, self.embedding_dim)
-            self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
-            self.outputs2demos = nn.Linear(self.hidden_size, NUM_POSSIBLE_DEMOS)
+            self.gru = nn.GRU(self.embedding_dim, self.embedding_dim)
+            # TODO: if you let embedding dims match up more cleanly, you can
+            # avoid these projection layers
+            self.init_h = nn.Linear(self.embedding_dim, self.embedding_dim)
+            self.outputs2demos = nn.Linear(self.embedding_dim, NUM_POSSIBLE_DEMOS)
 
 
     def embed_reward_matrix_and_demos(self,
@@ -90,7 +93,7 @@ class DemoAgent(nn.Module):
         reduced_composite_emb: torch.Tensor of size (batch_size, embedding_dim)
         """
         batch_size = reward_matrices.shape[0]
-        
+
         reward_matrix_emb = self.reward_matrix_mlp(reward_matrices)  # (batch_size, 16, num_intermediate_features)
         reward_matrix_emb = reward_matrix_emb.view(batch_size, -1)
         reward_matrix_emb = self.reward_matrix_compression_mlp(reward_matrix_emb)
@@ -99,14 +102,14 @@ class DemoAgent(nn.Module):
         demos_emb = self.examples_mlp(demos)   # (batch_size, num_intermediate_features)
         demos_emb = demos_emb.view(batch_size, -1)
         demos_emb = self.examples_compression_mlp(demos_emb)
-        
+
         composite_emb = torch.cat([reward_matrix_emb, demos_emb], dim=1)    # (batch_size, 2*num_intermediate_features)
-        
+
         reduced_composite_emb = self.composite_emb_compression_mlp(composite_emb)   # (batch_size, embedding_dim)
 
         return reduced_composite_emb
 
-    def forward(self, 
+    def forward(self,
                 reward_matrices,
                 demos,
                 all_possible_games,
@@ -114,20 +117,20 @@ class DemoAgent(nn.Module):
                 ):
         """
         Arguments:
-        reward_matrices: 
+        reward_matrices:
             The batchwise reward matrices seen by the agent
             torch.Tensor of size (batch_size, num_objects, object_encoding_length+1)
         demos:
             The batchwise demos seen by the agent
             if this is the first agent in the chain, this is None
             torch.Tensor of size (batch_size, num_examples_in_demo, num_choices_in_lis_context, object_encoding_length+1)
-        games_for_future_demos: 
+        games_for_future_demos:
             These are the games for which the agent makes a prediction, and the game/prediction combos are used
             as demonstrations for the next generation. This SHOULD be all the possible games (and then we can sample
             it down to a few to pass on, either through random or pedagogical selection)
             torch.Tensor of size (batch_size, num_games_to_eval, num_choices_in_lis_context, object_encoding_len)
         games_for_eval:
-            These are the games that are used to evaluate the 
+            These are the games that are used to evaluate the
 
         Return:
         output_lang:
@@ -146,10 +149,10 @@ class DemoAgent(nn.Module):
         # if this is the first agent in the chain, there is no demo (represented with just zeros)
         if demos is None:
             demos = torch.zeros(size=(batch_size, self.num_examples_for_demos, self.num_choices_in_listener_context, self.object_encoding_len+1))
-        
+
         # composite representation of the reward matrix and the demos that the current agent sees
         reward_matrix_and_demos_emb = self.embed_reward_matrix_and_demos(reward_matrices, demos)
-        
+
         # 2. Produce demos for the next generation
         if self.pedagogical_sampling:
             # in the pedagogical sample condition, our approach is to:
@@ -186,10 +189,14 @@ class DemoAgent(nn.Module):
             # size (batch_size, 560, num_choices_in_listener_context*(obj_encoding_len+1))
             all_possible_demos = all_possible_demos.view(batch_size, num_possible_games, -1)
 
-            reshaped_all_possible_demos = all_possible_demos.view(batch_size, -1)
-            all_demos_emb = self.all_demos_embedding(reshaped_all_possible_demos)    # (batch_size, self.embedding_dim)
-            all_demos_emb = all_demos_emb.unsqueeze(0)  # (1, batch_size, self.embedding_dim)
-            states = all_demos_emb  # rename this to make it clear that we are passing this into the gru
+            #  reshaped_all_possible_demos = all_possible_demos.view(batch_size, -1)
+            all_demos_emb = self.teacher_demo_encoding_mlp(all_possible_demos)
+            #  all_demos_emb = all_demos_emb.unsqueeze(0)  # (1, batch_size, self.embedding_dim)
+            #  states = all_demos_emb  # rename this to make it clear that we are passing this into the gru
+
+            # New states
+            states = reward_matrix_and_demos_emb[None]  # Unsqueeze <---
+            states = self.init_h(states)  # [1, 32, 120
 
             #breakpoint()
             # this is the dummy input to pass in for the first iteration
@@ -201,19 +208,30 @@ class DemoAgent(nn.Module):
 
             masked_indices = []
             for j in range(self.num_examples_for_demos):
-                
-                
                 # inputs needs to be size (1, batch_size, hidden_size)
                 # states needs to be size (1, batch_size, embedding_dim)
+                # inputs is prev demo
+                # states is
+
+                # This layer nn.Linear(hidden_dim, vocab_dim) can learn, as
+                # long as the vocab is fixed.
                 outputs, states = self.gru(inputs, states)  # (1, batch_size, hidden_size)
                 outputs = outputs.squeeze(0)    # (batch_size, hidden_size)
-                outputs = self.outputs2demos(outputs)   # (batch_size, num_demos)
+
+                # Batched dot product
+                breakpoint()
+                # from torch.testing import assert_allclose
+                outputs = torch.bmm(all_demos_emb, outputs[..., None]).squeeze(-1)
+                #  outputs_2 = torch.einsum('bde, be->bd', (all_demos_emb, outputs))
+                # assert_allclose(outputs, outputs_2)
 
                 # TODO: mask the indices of the demos we already selected
 
                 # do Gumbel-Softmax
                 predicted_onehot = F.gumbel_softmax(outputs, hard=True) # (batch_size, 560)
 
+                # Zero out all demos except for the ones corresponding to
+                # `predicted_onehot`
                 demo_j = all_possible_demos * predicted_onehot.unsqueeze(-1)  # (batch_size, 560, 27) * (batch_size, 560, 1)
                 demo_j = demo_j.view(batch_size, num_possible_games, self.num_choices_in_listener_context, -1)  # (batch_size, 560, 3, 9)
 
@@ -221,6 +239,10 @@ class DemoAgent(nn.Module):
                 demos_for_next_gen[:, j, :, :] = demo_j
 
                 # update inputs by pushing the predicted onehot encoding through self.onehot_embedding
+                # TODO: retrieve demo emb corresponding to what you predicted...
+                # state will keep track of past demos, though we may want to
+                # have multiple demos as past input
+                breakpoint()
                 predicted_onehot_unsqueezed = predicted_onehot.unsqueeze(0) # (1, batch_size, 560)
                 new_inputs = self.onehot_embedding(predicted_onehot_unsqueezed)     # (1, batch_size, hidden_size)
                 inputs = new_inputs
@@ -234,7 +256,7 @@ class DemoAgent(nn.Module):
 
             # part a)
             num_possible_games = all_possible_games.shape[1]
-            random_indices = np.random.choice(a=num_possible_games, size=self.num_examples_for_demos, replace=False) 
+            random_indices = np.random.choice(a=num_possible_games, size=self.num_examples_for_demos, replace=False)
             games_for_future_demos = all_possible_games[:, random_indices, :, :]
 
             # part b)
@@ -249,7 +271,7 @@ class DemoAgent(nn.Module):
             # generate predictions for the demo games
             game_preds = torch.argmax(game_scores, dim=-1)
             game_preds_as_one_hot = F.one_hot(game_preds, num_classes=self.num_choices_in_listener_context)
-            
+
             # part d)
             if games_for_future_demos.shape[2] != game_preds_as_one_hot.unsqueeze(-1).shape[2]:
                 breakpoint()
@@ -260,7 +282,7 @@ class DemoAgent(nn.Module):
         eval_listener_context_emb = self.games_embedding(games_for_eval.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
         eval_scores = torch.einsum('bvce,be->bvc', (eval_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
         eval_scores = F.log_softmax(eval_scores, dim=-1)
-        
+
         return demos_for_next_gen, eval_scores
 
-    
+
