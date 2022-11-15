@@ -68,14 +68,21 @@ class DemoAgent(nn.Module):
 
             # TODO: delete this chunk
             demo_input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
-            self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.embedding_dim)
+            self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.hidden_size)
+            #self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.embedding_dim)
 
             self.onehot_embedding = nn.Linear(NUM_POSSIBLE_DEMOS, self.embedding_dim)
-            self.gru = nn.GRU(self.embedding_dim, self.embedding_dim)
+            self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
             # TODO: if you let embedding dims match up more cleanly, you can
             # avoid these projection layers
-            self.init_h = nn.Linear(self.embedding_dim, self.embedding_dim)
+            self.init_h = nn.Linear(self.embedding_dim, self.hidden_size)
             self.outputs2demos = nn.Linear(self.embedding_dim, NUM_POSSIBLE_DEMOS)
+
+            self.outputs_mlp = nn.Sequential(
+                                        nn.Linear(self.hidden_size, self.hidden_size),
+                                        nn.ReLU(),
+                                        nn.Linear(self.hidden_size, self.hidden_size),
+                                )
 
 
     def embed_reward_matrix_and_demos(self,
@@ -143,7 +150,7 @@ class DemoAgent(nn.Module):
 
         """
         batch_size = reward_matrices.shape[0]
-
+        
         # 1. produce an embedding of the demos
 
         # if this is the first agent in the chain, there is no demo (represented with just zeros)
@@ -189,46 +196,46 @@ class DemoAgent(nn.Module):
             # size (batch_size, 560, num_choices_in_listener_context*(obj_encoding_len+1))
             all_possible_demos = all_possible_demos.view(batch_size, num_possible_games, -1)
 
-            #  reshaped_all_possible_demos = all_possible_demos.view(batch_size, -1)
             all_demos_emb = self.teacher_demo_encoding_mlp(all_possible_demos)
-            #  all_demos_emb = all_demos_emb.unsqueeze(0)  # (1, batch_size, self.embedding_dim)
-            #  states = all_demos_emb  # rename this to make it clear that we are passing this into the gru
 
-            # New states
-            states = reward_matrix_and_demos_emb[None]  # Unsqueeze <---
-            states = self.init_h(states)  # [1, 32, 120
+            # initialize states for the for loop
+            states = self.init_h(reward_matrix_and_demos_emb)   # (batch_size, hidden_size)
+            states = states.unsqueeze(0)                        # (1, batch_size, hidden_size)
 
-            #breakpoint()
             # this is the dummy input to pass in for the first iteration
             inputs = torch.zeros((1, batch_size, self.embedding_dim))
             inputs = inputs.to(reward_matrices.device)  # move to gpu
 
             # this is where we store all the demos that will be passed to the next generation of agents
             demos_for_next_gen = torch.zeros((batch_size, self.num_examples_for_demos, self.num_choices_in_listener_context, self.object_encoding_len+1))
-
-            masked_indices = []
+            
+            mask = torch.zeros(size=(batch_size, num_possible_games)).to(reward_matrices.device)
+            
             for j in range(self.num_examples_for_demos):
-                # inputs needs to be size (1, batch_size, hidden_size)
-                # states needs to be size (1, batch_size, embedding_dim)
-                # inputs is prev demo
-                # states is
+                # inputs needs to be size (1, batch_size, embedding_dim)
+                # states needs to be size (1, batch_size, hidden_size)
+                # inputs is the previous demo sampled for this agent (starts with null)
+                # states is the state of the agent
 
                 # This layer nn.Linear(hidden_dim, vocab_dim) can learn, as
                 # long as the vocab is fixed.
                 outputs, states = self.gru(inputs, states)  # (1, batch_size, hidden_size)
-                outputs = outputs.squeeze(0)    # (batch_size, hidden_size)
+                outputs = outputs.squeeze(0)                # (batch_size, hidden_size)
 
-                # Batched dot product
-                breakpoint()
-                # from torch.testing import assert_allclose
-                outputs = torch.bmm(all_demos_emb, outputs[..., None]).squeeze(-1)
-                #  outputs_2 = torch.einsum('bde, be->bd', (all_demos_emb, outputs))
-                # assert_allclose(outputs, outputs_2)
+                # this is taking a dot product between the demo representations and the agent's state
+                # to compute a score over every demo
+                #breakpoint()
+                outputs = torch.einsum('bde, be->bd', (all_demos_emb, outputs)) # (batch_size, 560)
+                outputs = F.log_softmax(outputs, dim=-1)
 
-                # TODO: mask the indices of the demos we already selected
+                # mask the indices of the demos we already selected with -np.inf
+                outputs = outputs.masked_fill(mask.bool(), -np.inf)
 
                 # do Gumbel-Softmax
-                predicted_onehot = F.gumbel_softmax(outputs, hard=True) # (batch_size, 560)
+                predicted_onehot = F.gumbel_softmax(outputs, dim=-1, hard=True) # (batch_size, 560)
+
+                # add all the selected demos to the mask
+                mask[predicted_onehot.bool()] = 1
 
                 # Zero out all demos except for the ones corresponding to
                 # `predicted_onehot`
@@ -239,13 +246,13 @@ class DemoAgent(nn.Module):
                 demos_for_next_gen[:, j, :, :] = demo_j
 
                 # update inputs by pushing the predicted onehot encoding through self.onehot_embedding
-                # TODO: retrieve demo emb corresponding to what you predicted...
-                # state will keep track of past demos, though we may want to
-                # have multiple demos as past input
-                breakpoint()
                 predicted_onehot_unsqueezed = predicted_onehot.unsqueeze(0) # (1, batch_size, 560)
                 new_inputs = self.onehot_embedding(predicted_onehot_unsqueezed)     # (1, batch_size, hidden_size)
                 inputs = new_inputs
+
+                # TODO: retrieve demo emb corresponding to what you predicted...
+                # state will keep track of past demos, though we may want to
+                # have multiple demos as past input
 
         else:
             # in the random sample condition, our approach is to:
