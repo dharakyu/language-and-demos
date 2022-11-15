@@ -189,15 +189,19 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 agent_view = reward_matrices
 
             if args.learn_from_demos:
-                demo_i, scores_i = handle_demos(agent_i,
-                                            agent_view,
-                                            prev_demo_i,
-                                            all_possible_games,
-                                            games_for_eval)
+                #demo_i, scores_i = handle_demos(agent_i,
+                #                            agent_view,
+                #                            prev_demo_i,
+                #                            all_possible_games,
+                #                            games_for_eval)
+                demo_i, scores_i = agent_i(reward_matrices=agent_view,
+                                            demos=prev_demo_i,
+                                            all_possible_games=all_possible_games,
+                                            games_for_eval=games_for_eval)
 
                 # update the demos for the next generation to ingest
                 prev_demo_i = demo_i
-                #breakpoint()
+                
             else:
                 prev_lang_i, lang_i, lang_len_i, scores_i = handle_messages(batch_size,
                                                                 i,
@@ -241,8 +245,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
             losses_for_curr_batch.append(loss)
 
-            if args.learn_from_demos:
-                pass
+            # if we're in the last batch and also the teacher (agent 0), grab an assortment of demos
+            if batch_idx == args.num_batches_per_epoch - 1 and i == 0:
+                if args.learn_from_demos and args.pedagogical_sampling:
+                    # get the first 20 and convert to numpy
+                    demos_subset = demo_i[:20].detach().cpu().numpy()
                 
 
         if training:    # use the losses from all the agents
@@ -279,7 +286,28 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('loss:', metrics['loss_' + str(i)])
         print('accuracy:', metrics['accuracy_' + str(i)])
 
-    
+    # log a subset of the demos to analyze the agent strategy
+    if args.learn_from_demos and args.pedagogical_sampling:
+        # reshape demos_subset so that it's a table with n_demos columns and k rows, each containing a demo of size (3, 9)
+        col_names = ['demo_' + str(i) for i in range(args.num_examples_for_demos)]
+        reshaped_demos = np.empty(shape=(20, args.num_examples_for_demos), dtype=object)
+        
+        for row_idx in range(20):
+            for col_idx in range(args.num_examples_for_demos):
+                demos_as_strings = [None] * 3
+                for i in range(3):
+                    object_i = demos_subset[row_idx, col_idx, i]
+                    selected_color = np.where(object_i[:4] == 1)[0][0]
+                    selected_shape = np.where(object_i[4:8] == 1)[0][0]
+                    chosen_by_agent = object_i[-1] == 1
+
+                    string_expression = "color {}, shape {}, selected {}".format(selected_color, selected_shape, chosen_by_agent)
+                    demos_as_strings[i] = string_expression
+                    
+                reshaped_demos[row_idx, col_idx] = " | ".join(demos_as_strings)
+        
+        demos_df = pd.DataFrame(data=reshaped_demos, columns=col_names)
+
     # TODO: fix the logging so it works with language or demonstration
     # initialize a DataFrame for logging reward matrices and messages
     #reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
@@ -288,7 +316,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     #df = pd.DataFrame(data_to_log, columns=col_names)
     df = None
     
-    return metrics, df
+    return metrics, demos_df, df
 
 def main():
     args = get_args()
@@ -346,8 +374,8 @@ def main():
         print('epoch', i)
         start = time.time()
 
-        train_metrics, _ = run_epoch('train', game, agents, optimizer, args)
-        val_metrics, val_df = run_epoch('val', game, agents, optimizer, args)
+        train_metrics, train_demos_df, _ = run_epoch('train', game, agents, optimizer, args)
+        val_metrics, val_demos_df, val_df = run_epoch('val', game, agents, optimizer, args)
         
         # just save the validation set, and rewrite it after each iter
         if args.save_outputs:
@@ -375,6 +403,7 @@ def main():
         if args.wandb:
             wandb.log(metrics)  # log standard metrics
             wandb.log({'generation_plot': generation_plot}) # log side-by-side comparison of reward across generations
+            wandb.log({'demos_subset_agent_0': wandb.Table(dataframe=val_demos_df)})
         
         
 if __name__ == "__main__":
