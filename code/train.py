@@ -4,6 +4,7 @@ from game import SignalingBanditsGame
 from arguments import get_args
 from lang_agent import LanguageAgent
 from demo_agent import DemoAgent
+from bayesian_model import compute_demo_score, compute_correlation
 
 import torch
 import torch.nn as nn
@@ -20,26 +21,6 @@ import os
 import copy
 
 import plotly.express as px
-
-def handle_demos(agent_i,
-                agent_view,
-                prev_demo_i,
-                all_possible_games,
-                games_for_eval
-                ):
-    """
-    Helper function for iterated learning in the learning from demos setting
-
-    Return:
-    scores_i: torch.Tensor of shape (batch_size, 3)
-    """
-    
-    demo_scores_i, eval_scores_i = agent_i(reward_matrices=agent_view,
-                                            demos=prev_demo_i,
-                                            all_possible_games=all_possible_games,
-                                            games_for_eval=games_for_eval)
-
-    return demo_scores_i, eval_scores_i
 
 
 def handle_messages(batch_size,
@@ -99,6 +80,7 @@ def handle_messages(batch_size,
 
     return prev_lang_i, lang_i, lang_len_i, scores_i
 
+
 def run_epoch(dataset_split, game, agents, optimizer, args):
     """
     Arguments:
@@ -116,6 +98,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_rewards_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
+    batch_teacher_corr = []
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -189,15 +172,21 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 agent_view = reward_matrices
 
             if args.learn_from_demos:
-                #demo_i, scores_i = handle_demos(agent_i,
-                #                            agent_view,
-                #                            prev_demo_i,
-                #                            all_possible_games,
-                #                            games_for_eval)
-                demo_i, scores_i = agent_i(reward_matrices=agent_view,
-                                            demos=prev_demo_i,
-                                            all_possible_games=all_possible_games,
-                                            games_for_eval=games_for_eval)
+            
+                demo_i, scores_i, neural_game_scores = agent_i(reward_matrices=agent_view,
+                                                                demos=prev_demo_i,
+                                                                all_possible_games=all_possible_games,
+                                                                games_for_eval=games_for_eval)
+
+                if args.pedagogical_sampling:
+                    bayesian_demo_scores = compute_demo_score(all_possible_games=all_possible_games,
+                                                                is_first_agent=prev_demo_i is None, 
+                                                                reward_matrices=reward_matrices,
+                                                                game=game)
+
+                    corr = compute_correlation(neural_game_scores, bayesian_demo_scores)
+                    if i == 0:
+                        batch_teacher_corr.append(corr)
 
                 # update the demos for the next generation to ingest
                 prev_demo_i = demo_i
@@ -286,6 +275,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('loss:', metrics['loss_' + str(i)])
         print('accuracy:', metrics['accuracy_' + str(i)])
 
+    if args.learn_from_demos and args.pedagogical_sampling:
+        metrics['correlation'] = mean(batch_teacher_corr)
+        print('correlation:', metrics['correlation'])
+
+    """
     # log a subset of the demos to analyze the agent strategy
     if args.learn_from_demos and args.pedagogical_sampling:
         # reshape demos_subset so that it's a table with n_demos columns and k rows, each containing a demo of size (3, 9)
@@ -307,13 +301,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 reshaped_demos[row_idx, col_idx] = " | ".join(demos_as_strings)
         
         demos_df = pd.DataFrame(data=reshaped_demos, columns=col_names)
-
+    """
     # TODO: fix the logging so it works with language or demonstration
     # initialize a DataFrame for logging reward matrices and messages
     #reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
     #message_col_names = ['message_' + str(i) for i in range(num_gens_to_iterate_over)]
     #col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
     #df = pd.DataFrame(data_to_log, columns=col_names)
+
+    demos_df = None
     df = None
     
     return metrics, demos_df, df

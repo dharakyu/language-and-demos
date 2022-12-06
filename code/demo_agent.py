@@ -63,10 +63,7 @@ class DemoAgent(nn.Module):
 
         if self.pedagogical_sampling:
             NUM_POSSIBLE_DEMOS = 560
-            #  demo_size = self.num_choices_in_listener_context * (self.object_encoding_len + 1)
-            #  self.all_demos_embedding = nn.Linear(input_size, hidden_size)
 
-            # TODO: delete this chunk
             demo_input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
             self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.hidden_size)
             #self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.embedding_dim)
@@ -131,22 +128,25 @@ class DemoAgent(nn.Module):
             The batchwise demos seen by the agent
             if this is the first agent in the chain, this is None
             torch.Tensor of size (batch_size, num_examples_in_demo, num_choices_in_lis_context, object_encoding_length+1)
-        games_for_future_demos:
+        all_possible_games:
             These are the games for which the agent makes a prediction, and the game/prediction combos are used
             as demonstrations for the next generation. This SHOULD be all the possible games (and then we can sample
             it down to a few to pass on, either through random or pedagogical selection)
-            torch.Tensor of size (batch_size, num_games_to_eval, num_choices_in_lis_context, object_encoding_len)
         games_for_eval:
-            These are the games that are used to evaluate the
+            These are the games that are used to evaluate the performance of the agent
+            torch.Tensor of size (batch_size, num_games_to_eval, num_choices_in_lis_context, object_encoding_len)
 
         Return:
-        output_lang:
+        demos_for_next_gen:
             if use_discrete_comm: torch.Tensor of size (batch_size, max_message_len, vocab_size)
             else: torch.Tensor of size (batch_size, vocab_size)
-        output_lang_len:
-            if use_discrete_comm: torch.Tensor of size (batch_size, )
-            else: None
-        scores: torch.Tensor of size (batch_size, num_views, num_choices)
+        eval_scores:
+            scores over the possible intended targets in games_for_eval
+            torch.Tensor of size (batch_size, num_games_to_eval, num_choices_in_lis_context)
+        scores_for_comparison: 
+            these are the scores over all possible demos that could be shown to the next gen
+            used to compare performance to the Bayesian model
+            torch.Tensor of size (batch_size, num_possible_games)
 
         """
         batch_size = reward_matrices.shape[0]
@@ -162,37 +162,27 @@ class DemoAgent(nn.Module):
 
         # 2. Produce demos for the next generation
         if self.pedagogical_sampling:
-            # in the pedagogical sample condition, our approach is to:
             # a) evaluate the current agent on all possible (560) games
-            # b) get the predictions
-            # c) tack the games and predictions together to create a tensor of all possible demos
-            # d) create an embedding representation of all the demos (this is states) and a representation
-            # of the previously selected demo, which is just zeros for now (this is inputs)
-            # for i in range(num_examples_for_demo):
-            #   e) embed all possible demos with self.gru(inputs, states) - this yields outputs and hidden
-            #   f) embed outputs to be the same size as the number of possible demos
-            #   g) use Gumbel-Softmax to convert outputs to a onehot vector
-            #   h) update the new inputs to be the embedded representation of that onehot vector
-
-            # part a)
             # move to gpu
             all_possible_games = all_possible_games.to(reward_matrices.device)  # (batch_size, num_examples_for_demo, num_choices_in_listener_context, obj_encoding_len)
             all_games_listener_context_emb = self.games_embedding(all_possible_games.float())
             game_scores = torch.einsum('bvce,be->bvc', (all_games_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
             game_scores = F.log_softmax(game_scores, dim=-1)
 
-            # part b)
+            # b) get the predictions
             game_preds = torch.argmax(game_scores, dim=-1)
             game_preds_as_one_hot = F.one_hot(game_preds, num_classes=self.num_choices_in_listener_context)
 
-            # part c)
+            # c) tack the games and predictions together to create a tensor of all possible demos
             batch_size = all_possible_games.shape[0]
             num_possible_games = all_possible_games.shape[1]
 
             # size (batch_size, 560, num_choices_in_listener_context, obj_encoding_len+1)
             all_possible_demos = torch.cat([all_possible_games, game_preds_as_one_hot.unsqueeze(-1).float()], dim=-1)
 
-            # part d)
+            # d) create an embedding representation of all the demos (this is states) and a representation
+            # of the previously selected demo, which is just zeros for now (this is inputs)
+
             # size (batch_size, 560, num_choices_in_listener_context*(obj_encoding_len+1))
             all_possible_demos = all_possible_demos.view(batch_size, num_possible_games, -1)
 
@@ -212,26 +202,29 @@ class DemoAgent(nn.Module):
             mask = torch.zeros(size=(batch_size, num_possible_games)).to(reward_matrices.device)
             
             for j in range(self.num_examples_for_demos):
+
                 # inputs needs to be size (1, batch_size, embedding_dim)
                 # states needs to be size (1, batch_size, hidden_size)
                 # inputs is the previous demo sampled for this agent (starts with null)
                 # states is the state of the agent
 
-                # This layer nn.Linear(hidden_dim, vocab_dim) can learn, as
-                # long as the vocab is fixed.
+                # here we embed the agent's state (states) along with the last demo it produced (inputs)
                 outputs, states = self.gru(inputs, states)  # (1, batch_size, hidden_size)
                 outputs = outputs.squeeze(0)                # (batch_size, hidden_size)
 
                 # this is taking a dot product between the demo representations and the agent's state
                 # to compute a score over every demo
-                #breakpoint()
                 outputs = torch.einsum('bde, be->bd', (all_demos_emb, outputs)) # (batch_size, 560)
+
+                # this is used for the comparison to the Bayesian model
+                scores_for_comparison = F.softmax(outputs, dim=-1)
+
                 outputs = F.log_softmax(outputs, dim=-1)
 
                 # mask the indices of the demos we already selected with -np.inf
                 outputs = outputs.masked_fill(mask.bool(), -np.inf)
 
-                # do Gumbel-Softmax
+                # use Gumbel-Softmax to convert outputs to a onehot vector
                 predicted_onehot = F.gumbel_softmax(outputs, dim=-1, hard=True) # (batch_size, 560)
 
                 # add all the selected demos to the mask
@@ -255,18 +248,12 @@ class DemoAgent(nn.Module):
                 # have multiple demos as past input
 
         else:
-            # in the random sample condition, our approach is to:
             # a) sample random games to be used as demos for the next generation
-            # b) evaluate the current agent on those random games
-            # c) get the predictions
-            # d) create the demos by tacking together the game and the choice that the agent made
-
-            # part a)
             num_possible_games = all_possible_games.shape[1]
             random_indices = np.random.choice(a=num_possible_games, size=self.num_examples_for_demos, replace=False)
             games_for_future_demos = all_possible_games[:, random_indices, :, :]
 
-            # part b)
+            # b) evaluate the current agent on those random games
             # move to gpu
             games_for_future_demos = games_for_future_demos.to(reward_matrices.device)
 
@@ -274,22 +261,22 @@ class DemoAgent(nn.Module):
             game_scores = torch.einsum('bvce,be->bvc', (game_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
             game_scores = F.log_softmax(game_scores, dim=-1)
 
-            # part c)
-            # generate predictions for the demo games
+            # c) generate predictions for the demo games
             game_preds = torch.argmax(game_scores, dim=-1)
             game_preds_as_one_hot = F.one_hot(game_preds, num_classes=self.num_choices_in_listener_context)
 
-            # part d)
-            if games_for_future_demos.shape[2] != game_preds_as_one_hot.unsqueeze(-1).shape[2]:
-                breakpoint()
-            # concatenate the predictions for the demo set to the actual games, is size (32, n, 3, 9)
+            assert games_for_future_demos.shape[2] == game_preds_as_one_hot.unsqueeze(-1).shape[2]
+            
+            # d) create the demos by tacking together the game and the choice that the agent made
             demos_for_next_gen = torch.cat([games_for_future_demos, game_preds_as_one_hot.unsqueeze(-1).float()], dim=-1)   # (batch_size, num_views, num_choices, encoding_len)
+
+            scores_for_comparison = None
 
         # 3. produce scores over outputs for the games that are used to evaluate performance
         eval_listener_context_emb = self.games_embedding(games_for_eval.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
         eval_scores = torch.einsum('bvce,be->bvc', (eval_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
         eval_scores = F.log_softmax(eval_scores, dim=-1)
 
-        return demos_for_next_gen, eval_scores
+        return demos_for_next_gen, eval_scores, scores_for_comparison
 
 
