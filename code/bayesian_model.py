@@ -74,5 +74,19 @@ def compute_correlation(neural_game_scores, bayesian_demo_scores):
     return corr
 
 
+def compute_mean_bayesian_score(neural_game_scores, bayesian_demo_scores):
+    """
+    Return the Bayesian model score associated with the highest scoring demo
+    as indicated by the neural model. The goal here is to determine whether the neural model's
+    prediction for the best demo aligns at all with the Bayesian model
+    """
+    batch_size = neural_game_scores.shape[0]
+    idx = torch.argmax(neural_game_scores, dim=-1)
+    bayesian_demo_scores_indexed = bayesian_demo_scores[range(batch_size), idx]
+    mean = torch.mean(bayesian_demo_scores_indexed)
+    #breakpoint()
+    return mean.item()
+
+
 
 

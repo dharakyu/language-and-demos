@@ -4,7 +4,7 @@ from game import SignalingBanditsGame
 from arguments import get_args
 from lang_agent import LanguageAgent
 from demo_agent import DemoAgent
-from bayesian_model import compute_demo_score, compute_correlation
+from bayesian_model import *
 
 import torch
 import torch.nn as nn
@@ -99,6 +99,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_teacher_corr = []
+    batch_teacher_mean_score = []
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -172,7 +173,6 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 agent_view = reward_matrices
 
             if args.learn_from_demos:
-            
                 demo_i, scores_i, neural_game_scores = agent_i(reward_matrices=agent_view,
                                                                 demos=prev_demo_i,
                                                                 all_possible_games=all_possible_games,
@@ -185,8 +185,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                 game=game)
 
                     corr = compute_correlation(neural_game_scores, bayesian_demo_scores)
+                    mean_bayesian_score = compute_mean_bayesian_score(neural_game_scores, bayesian_demo_scores)
+
                     if i == 0:
                         batch_teacher_corr.append(corr)
+                        batch_teacher_mean_score.append(mean_bayesian_score)
 
                 # update the demos for the next generation to ingest
                 prev_demo_i = demo_i
@@ -277,7 +280,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
     if args.learn_from_demos and args.pedagogical_sampling:
         metrics['correlation'] = mean(batch_teacher_corr)
+        metrics['mean Bayesian score'] = mean(batch_teacher_mean_score)
+
         print('correlation:', metrics['correlation'])
+        print('mean Bayesian score:', metrics['mean Bayesian score'])
+
 
     """
     # log a subset of the demos to analyze the agent strategy
