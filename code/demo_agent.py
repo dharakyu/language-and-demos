@@ -7,6 +7,8 @@ import numpy as np
 from listener import RNNEncoder
 import data
 
+import copy
+
 class DemoAgent(nn.Module):
     def __init__(self, chain_length,
                 pedagogical_sampling,
@@ -217,9 +219,10 @@ class DemoAgent(nn.Module):
                 outputs = torch.einsum('bde, be->bd', (all_demos_emb, outputs)) # (batch_size, 560)
 
                 # this is used for the comparison to the Bayesian model
+                # this has to be in log probs bc of how the pytorch KL function works!!
                 scores_for_comparison = F.softmax(outputs, dim=-1)
 
-                outputs = F.log_softmax(outputs, dim=-1)
+                outputs = F.log_softmax(outputs, dim=-1)   
 
                 # mask the indices of the demos we already selected with -np.inf
                 outputs = outputs.masked_fill(mask.bool(), -np.inf)

@@ -279,10 +279,10 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('accuracy:', metrics['accuracy_' + str(i)])
 
     if args.learn_from_demos and args.pedagogical_sampling:
-        metrics['correlation'] = mean(batch_teacher_corr)
+        metrics['jsd'] = mean(batch_teacher_corr)
         metrics['mean Bayesian score'] = mean(batch_teacher_mean_score)
 
-        print('correlation:', metrics['correlation'])
+        print('jsd:', metrics['jsd'])
         print('mean Bayesian score:', metrics['mean Bayesian score'])
 
 
