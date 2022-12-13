@@ -169,6 +169,12 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             # what view is the agent seeing?
             if args.partial_reward_matrix:
                 agent_view = reward_matrices_views[i]
+
+            elif args.perfect_teacher:
+                if i == 0:  # teacher gets all the utilities
+                    agent_view = reward_matrices
+                if i == 1:  # student gets no utilities
+                    agent_view = torch.zeros_like(reward_matrices)
             else:
                 agent_view = reward_matrices
 
@@ -384,7 +390,7 @@ def main():
         if args.save_outputs:
             pkl_full_save_path = os.path.join(args.save_dir, args.name + '_val.pkl')
             val_df.to_pickle(pkl_full_save_path)
-
+        
         for metric, value in train_metrics.items():
             metrics['train_{}'.format(metric)] = value
 
@@ -406,7 +412,7 @@ def main():
         if args.wandb:
             wandb.log(metrics)  # log standard metrics
             wandb.log({'generation_plot': generation_plot}) # log side-by-side comparison of reward across generations
-            wandb.log({'demos_subset_agent_0': wandb.Table(dataframe=val_demos_df)})
+            #wandb.log({'demos_subset_agent_0': wandb.Table(dataframe=val_demos_df)})
         
         
 if __name__ == "__main__":
