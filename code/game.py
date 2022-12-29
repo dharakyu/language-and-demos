@@ -76,10 +76,9 @@ class SignalingBanditsGame():
         None
 
         Return:
-        reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 2)
+        reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 1)
         The first (self.num_colors + self.num_shapes) items in a row are the object embedding
-        The next item is the utility associated with that object
-        The next item is a Boolean representing whether that object is in the listener's context
+        The last item is the utility associated with that object
 
         i.e. if the item described by the feature [0, 1, 0, 1, 0, 0] has utility 3 and is present in the listener's
         context, then the corresponding row in reward_matrix is [0, 1, 0, 1, 0, 0, 3, 1]

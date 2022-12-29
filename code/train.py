@@ -4,6 +4,7 @@ from game import SignalingBanditsGame
 from arguments import get_args
 from lang_agent import LanguageAgent
 from demo_agent import DemoAgent
+from bayesian_model import *
 
 import torch
 import torch.nn as nn
@@ -20,26 +21,6 @@ import os
 import copy
 
 import plotly.express as px
-
-def handle_demos(agent_i,
-                agent_view,
-                prev_demo_i,
-                all_possible_games,
-                games_for_eval
-                ):
-    """
-    Helper function for iterated learning in the learning from demos setting
-
-    Return:
-    scores_i: torch.Tensor of shape (batch_size, 3)
-    """
-    
-    demo_scores_i, eval_scores_i = agent_i(reward_matrices=agent_view,
-                                            demos=prev_demo_i,
-                                            all_possible_games=all_possible_games,
-                                            games_for_eval=games_for_eval)
-
-    return demo_scores_i, eval_scores_i
 
 
 def handle_messages(batch_size,
@@ -99,6 +80,7 @@ def handle_messages(batch_size,
 
     return prev_lang_i, lang_i, lang_len_i, scores_i
 
+
 def run_epoch(dataset_split, game, agents, optimizer, args):
     """
     Arguments:
@@ -116,6 +98,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_rewards_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
+    batch_teacher_corr = []
+    batch_teacher_mean_score = []
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -185,19 +169,37 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             # what view is the agent seeing?
             if args.partial_reward_matrix:
                 agent_view = reward_matrices_views[i]
+
+            elif args.perfect_teacher:
+                if i == 0:  # teacher gets all the utilities
+                    agent_view = reward_matrices
+                if i == 1:  # student gets no utilities
+                    agent_view = torch.zeros_like(reward_matrices)
             else:
                 agent_view = reward_matrices
 
             if args.learn_from_demos:
-                demo_i, scores_i = handle_demos(agent_i,
-                                            agent_view,
-                                            prev_demo_i,
-                                            all_possible_games,
-                                            games_for_eval)
+                demo_i, scores_i, neural_game_scores = agent_i(reward_matrices=agent_view,
+                                                                demos=prev_demo_i,
+                                                                all_possible_games=all_possible_games,
+                                                                games_for_eval=games_for_eval)
+
+                if args.pedagogical_sampling:
+                    bayesian_demo_scores = compute_demo_score(all_possible_games=all_possible_games,
+                                                                is_first_agent=prev_demo_i is None, 
+                                                                reward_matrices=reward_matrices,
+                                                                game=game)
+
+                    corr = compute_correlation(neural_game_scores, bayesian_demo_scores)
+                    mean_bayesian_score = compute_mean_bayesian_score(neural_game_scores, bayesian_demo_scores)
+
+                    if i == 0:
+                        batch_teacher_corr.append(corr)
+                        batch_teacher_mean_score.append(mean_bayesian_score)
 
                 # update the demos for the next generation to ingest
                 prev_demo_i = demo_i
-                #breakpoint()
+                
             else:
                 prev_lang_i, lang_i, lang_len_i, scores_i = handle_messages(batch_size,
                                                                 i,
@@ -241,8 +243,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
             losses_for_curr_batch.append(loss)
 
-            if args.learn_from_demos:
-                pass
+            # if we're in the last batch and also the teacher (agent 0), grab an assortment of demos
+            if batch_idx == args.num_batches_per_epoch - 1 and i == 0:
+                if args.learn_from_demos and args.pedagogical_sampling:
+                    # get the first 20 and convert to numpy
+                    demos_subset = demo_i[:20].detach().cpu().numpy()
                 
 
         if training:    # use the losses from all the agents
@@ -279,16 +284,48 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('loss:', metrics['loss_' + str(i)])
         print('accuracy:', metrics['accuracy_' + str(i)])
 
-    
+    if args.learn_from_demos and args.pedagogical_sampling:
+        metrics['jsd'] = mean(batch_teacher_corr)
+        metrics['mean Bayesian score'] = mean(batch_teacher_mean_score)
+
+        print('jsd:', metrics['jsd'])
+        print('mean Bayesian score:', metrics['mean Bayesian score'])
+
+
+    """
+    # log a subset of the demos to analyze the agent strategy
+    if args.learn_from_demos and args.pedagogical_sampling:
+        # reshape demos_subset so that it's a table with n_demos columns and k rows, each containing a demo of size (3, 9)
+        col_names = ['demo_' + str(i) for i in range(args.num_examples_for_demos)]
+        reshaped_demos = np.empty(shape=(20, args.num_examples_for_demos), dtype=object)
+        
+        for row_idx in range(20):
+            for col_idx in range(args.num_examples_for_demos):
+                demos_as_strings = [None] * 3
+                for i in range(3):
+                    object_i = demos_subset[row_idx, col_idx, i]
+                    selected_color = np.where(object_i[:4] == 1)[0][0]
+                    selected_shape = np.where(object_i[4:8] == 1)[0][0]
+                    chosen_by_agent = object_i[-1] == 1
+
+                    string_expression = "color {}, shape {}, selected {}".format(selected_color, selected_shape, chosen_by_agent)
+                    demos_as_strings[i] = string_expression
+                    
+                reshaped_demos[row_idx, col_idx] = " | ".join(demos_as_strings)
+        
+        demos_df = pd.DataFrame(data=reshaped_demos, columns=col_names)
+    """
     # TODO: fix the logging so it works with language or demonstration
     # initialize a DataFrame for logging reward matrices and messages
     #reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
     #message_col_names = ['message_' + str(i) for i in range(num_gens_to_iterate_over)]
     #col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
     #df = pd.DataFrame(data_to_log, columns=col_names)
+
+    demos_df = None
     df = None
     
-    return metrics, df
+    return metrics, demos_df, df
 
 def main():
     args = get_args()
@@ -346,14 +383,14 @@ def main():
         print('epoch', i)
         start = time.time()
 
-        train_metrics, _ = run_epoch('train', game, agents, optimizer, args)
-        val_metrics, val_df = run_epoch('val', game, agents, optimizer, args)
+        train_metrics, train_demos_df, _ = run_epoch('train', game, agents, optimizer, args)
+        val_metrics, val_demos_df, val_df = run_epoch('val', game, agents, optimizer, args)
         
         # just save the validation set, and rewrite it after each iter
         if args.save_outputs:
             pkl_full_save_path = os.path.join(args.save_dir, args.name + '_val.pkl')
             val_df.to_pickle(pkl_full_save_path)
-
+        
         for metric, value in train_metrics.items():
             metrics['train_{}'.format(metric)] = value
 
@@ -375,6 +412,7 @@ def main():
         if args.wandb:
             wandb.log(metrics)  # log standard metrics
             wandb.log({'generation_plot': generation_plot}) # log side-by-side comparison of reward across generations
+            #wandb.log({'demos_subset_agent_0': wandb.Table(dataframe=val_demos_df)})
         
         
 if __name__ == "__main__":
