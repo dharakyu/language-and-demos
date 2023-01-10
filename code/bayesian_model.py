@@ -24,6 +24,7 @@ def compute_demo_score(all_possible_games,
                         is_first_agent, 
                         reward_matrices,
                         game,
+                        teacher_alpha,
                         alpha=1):
     """
     Given the set of all possible demos that could be shown the student, compute the 
@@ -56,7 +57,8 @@ def compute_demo_score(all_possible_games,
 
     demo_scores = numerator / denominator
     #breakpoint()
-    demo_scores = torch.exp(10000 * demo_scores.log())
+    #demo_scores = torch.exp(100 * demo_scores.log())
+    demo_scores = F.softmax(teacher_alpha * demo_scores, dim=-1)
     
     return demo_scores
 
@@ -90,4 +92,42 @@ def compute_mean_bayesian_score(neural_game_scores, bayesian_demo_scores):
 
 
 
+def bayesian_teacher(all_possible_games,
+                    is_first_agent, 
+                    reward_matrices,
+                    game,
+                    teacher_alpha,
+                    games_for_eval):
+
+    """
+    Return:
+    scores_i (torch.Tensor): These are the scores over the eval games. shape (batch_size, num_games_for_eval, num_choices_in_game)
+    demo_i (torch.Tensor): shape (batch_size, num_demos, num_choices_in_game, obj_encoding_len+1)
+    """
+
+    # scores_i are just the raw ground truth values (so we will assume the teacher is 100% accurate)
+    scores_i = game.compute_rewards(games_for_eval, reward_matrices) 
+
+    # demo_i is the concatenation of the best demo and the teacher's selection (assuming the teacher
+    # always makes the optimal choice)
+    bayesian_demo_scores = compute_demo_score(all_possible_games,
+                                                is_first_agent, 
+                                                reward_matrices,
+                                                game,
+                                                teacher_alpha)
+    indices = bayesian_demo_scores.argmax(dim=-1)
+
+    demo_only = all_possible_games[torch.arange(all_possible_games.shape[0]), indices].to(reward_matrices.device)
+
+    # now compute the rewards associated with each demo
+    rewards_associated_with_demo = game.compute_rewards(demo_only.unsqueeze(1), reward_matrices)
+
+    # assume the teacher always picks the highest reward
+    argmax = rewards_associated_with_demo.argmax(-1).squeeze()
+    num_classes = demo_only.shape[1]
+    argmax_as_onehot = F.one_hot(argmax, num_classes=num_classes).unsqueeze(-1).float()
+    
+    demo_i = torch.cat([demo_only, argmax_as_onehot], dim=-1)                             
+    
+    return demo_i, scores_i
 

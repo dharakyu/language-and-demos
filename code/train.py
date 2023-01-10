@@ -98,8 +98,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_rewards_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
-    batch_teacher_corr = []
-    batch_teacher_mean_score = []
+    batch_teacher_dist = {i:[] for i in [1, 10, 100, 1000, 10000]}
+    batch_teacher_mean_score = {i:[] for i in [1, 10, 100, 1000, 10000]}
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -179,24 +179,39 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 agent_view = reward_matrices
 
             if args.learn_from_demos:
-                demo_i, scores_i, neural_game_scores = agent_i(reward_matrices=agent_view,
+                if args.use_bayesian_teacher and i == 0:
+                    demo_i, scores_i = bayesian_teacher(all_possible_games=all_possible_games,
+                                                                            is_first_agent=prev_demo_i is None, 
+                                                                            reward_matrices=reward_matrices,
+                                                                            game=game,
+                                                                            teacher_alpha=100,
+                                                                            games_for_eval=games_for_eval)
+
+                else:
+                    demo_i, scores_i, neural_game_scores = agent_i(reward_matrices=agent_view,
                                                                 demos=prev_demo_i,
                                                                 all_possible_games=all_possible_games,
                                                                 games_for_eval=games_for_eval)
 
-                if args.pedagogical_sampling:
-                    bayesian_demo_scores = compute_demo_score(all_possible_games=all_possible_games,
-                                                                is_first_agent=prev_demo_i is None, 
-                                                                reward_matrices=reward_matrices,
-                                                                game=game)
+                
+                if args.pedagogical_sampling and not args.use_bayesian_teacher:
+                    if i == 0:  # only do this for the teacher
+                        # compute alignment with Bayesian model for a range of teacher alpha vals
+                        for teacher_alpha in batch_teacher_mean_score.keys():
+                            #breakpoint()
+                            bayesian_demo_scores = compute_demo_score(all_possible_games=all_possible_games,
+                                                                            is_first_agent=prev_demo_i is None, 
+                                                                            reward_matrices=reward_matrices,
+                                                                            game=game,
+                                                                            teacher_alpha=teacher_alpha)
 
-                    corr = compute_correlation(neural_game_scores, bayesian_demo_scores)
-                    mean_bayesian_score = compute_mean_bayesian_score(neural_game_scores, bayesian_demo_scores)
+                            corr = compute_correlation(neural_game_scores, bayesian_demo_scores)
+                            mean_bayesian_score = compute_mean_bayesian_score(neural_game_scores, bayesian_demo_scores)
 
-                    if i == 0:
-                        batch_teacher_corr.append(corr)
-                        batch_teacher_mean_score.append(mean_bayesian_score)
-
+                            
+                            batch_teacher_dist[teacher_alpha].append(corr)
+                            batch_teacher_mean_score[teacher_alpha].append(mean_bayesian_score)
+                
                 # update the demos for the next generation to ingest
                 prev_demo_i = demo_i
                 
@@ -257,22 +272,24 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 optimizer.step()
             else:
                 for i in range(num_gens_to_iterate_over):
-                    # loss for agent i = loss for agent i+1 + ... + loss for agent n
-                    loss = torch.sum(torch.stack(losses_for_curr_batch)[i:])
-                    loss.backward(retain_graph=True)    # need to retain computation graph bc of the way we compute the loss
+                    #breakpoint()
+                    if not (i == 0 and args.use_bayesian_teacher):
+                        # loss for agent i = loss for agent i+1 + ... + loss for agent n
+                        loss = torch.sum(torch.stack(losses_for_curr_batch)[i:])
+                        loss.backward(retain_graph=True)    # need to retain computation graph bc of the way we compute the loss
 
-                    if args.shuffle_agents:
-                        agent_i = random_indices[i]
-                        optimizer[agent_i].step()
-                    else:
-                        optimizer[i].step()
+                        if args.shuffle_agents:
+                            agent_i = random_indices[i]
+                            optimizer[agent_i].step()
+                        else:
+                            optimizer[i].step()
 
         batch_data_to_log = reward_matrices_to_log + reward_matrices_views_to_log + messages_to_log
         data_to_log.append(batch_data_to_log)
         
     
     print(dataset_split)
-    #breakpoint()
+    
     metrics = {}
     for i in range(num_gens_to_iterate_over):
         metrics['reward_' + str(i)] = mean(batch_rewards_after_agent_i[i])
@@ -284,13 +301,14 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('loss:', metrics['loss_' + str(i)])
         print('accuracy:', metrics['accuracy_' + str(i)])
 
-    if args.learn_from_demos and args.pedagogical_sampling:
-        metrics['jsd'] = mean(batch_teacher_corr)
-        metrics['mean Bayesian score'] = mean(batch_teacher_mean_score)
+    if args.learn_from_demos and args.pedagogical_sampling and not args.use_bayesian_teacher:
+        for teacher_alpha in batch_teacher_dist.keys():
+            metrics['jsd_alpha={}'.format(teacher_alpha)] = mean(batch_teacher_dist[teacher_alpha])
+            metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)] = mean(batch_teacher_mean_score[teacher_alpha])
 
-        print('jsd:', metrics['jsd'])
-        print('mean Bayesian score:', metrics['mean Bayesian score'])
-
+            print('jsd:', metrics['jsd_alpha={}'.format(teacher_alpha)])
+            print('mean Bayesian score:', metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)])
+        
 
     """
     # log a subset of the demos to analyze the agent strategy
@@ -382,7 +400,7 @@ def main():
     for i in range(args.epochs):
         print('epoch', i)
         start = time.time()
-
+        if i == 30: breakpoint()
         train_metrics, train_demos_df, _ = run_epoch('train', game, agents, optimizer, args)
         val_metrics, val_demos_df, val_df = run_epoch('val', game, agents, optimizer, args)
         
