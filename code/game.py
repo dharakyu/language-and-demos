@@ -68,27 +68,34 @@ class SignalingBanditsGame():
         # fix the number of unique games on which we evaluate each agent's accuracy
         self.num_games_for_eval = num_games_for_eval
 
-    def sample_reward_matrix(self, inductive_bias):
+    def sample_reward_matrix(self, inductive_bias, split, train_percent):
         """
         Generate the reward matrix, to which the speaker will gain access
 
         Arguments:
-        None
+            inductive_bias (Boolean)
+            split (string): 'train' or 'val'
+            train_percent (float): size of train split
 
         Return:
-        reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 1)
-        The first (self.num_colors + self.num_shapes) items in a row are the object embedding
-        The last item is the utility associated with that object
+            reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 1)
+                The first (self.num_colors + self.num_shapes) items in a row are the object embedding
+                The last item is the utility associated with that object
 
-        i.e. if the item described by the feature [0, 1, 0, 1, 0, 0] has utility 3 and is present in the listener's
-        context, then the corresponding row in reward_matrix is [0, 1, 0, 1, 0, 0, 3, 1]
+        i.e. if the item described by the feature [0, 1, 0, 1, 0, 0] has utility 3,
+        then the corresponding row in reward_matrix is [0, 1, 0, 1, 0, 0, 3]
         """
         # determines the reward configuration we are using
         if inductive_bias:
             probs = [(1/24) * 0.2] * 24 + [(1/(self.num_reward_assignments-24)) * 0.8] * (self.num_reward_assignments-24)
             reward_assignment_idx = np.random.choice(self.num_reward_assignments, p=probs)
         else:
-            reward_assignment_idx = np.random.randint(0, self.num_reward_assignments)
+            if split == 'train':
+                train_upper_bound_idx = int(self.num_reward_assignments * train_percent)
+                reward_assignment_idx = np.random.randint(0, train_upper_bound_idx)
+            else:
+                val_lower_bound_idx = int(self.num_reward_assignments * train_percent)
+                reward_assignment_idx = np.random.randint(val_lower_bound_idx, self.num_reward_assignments)
 
         reward_assignment = self.possible_reward_assignments[reward_assignment_idx]
         color_utilities, shape_utilities = reward_assignment
@@ -114,12 +121,14 @@ class SignalingBanditsGame():
     
         return np.array(reward_matrix)
 
-    def sample_batch(self, inductive_bias, batch_size=32):
+    def sample_batch(self, inductive_bias, split, train_percent=0.8, batch_size=32):
         """
         Sample games for a whole batch
         Arguments:
-        inductive_bias: Boolean
-        batch_size: int
+        inductive_bias (Boolean): whether to skew the distribution of examples
+        split (string): 'train' or 'val'
+        train_percent (float): size of the train split
+        batch_size (int)
 
         Return
         batch_reward_matrices: np.array of size (batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+1)
@@ -132,7 +141,7 @@ class SignalingBanditsGame():
         batch_all_listener_views = []
         
         for i in range(batch_size):
-            reward_matrix = self.sample_reward_matrix(inductive_bias)
+            reward_matrix = self.sample_reward_matrix(inductive_bias, split, train_percent)
  
             all_listener_views = reward_matrix[self.combinations][:, :, :-1]
 

@@ -100,6 +100,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_teacher_dist = {i:[] for i in [1, 10, 100, 1000, 10000]}
     batch_teacher_mean_score = {i:[] for i in [1, 10, 100, 1000, 10000]}
+    batch_num_unique_teacher_demos = []
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -108,7 +109,9 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_views_to_log = []
 
         start = time.time()
-        reward_matrices, games_for_eval, all_possible_games = game.sample_batch(inductive_bias=(training and args.inductive_bias))
+        reward_matrices, games_for_eval, all_possible_games = game.sample_batch(inductive_bias=(training and args.inductive_bias),
+                                                                                split=dataset_split
+                                                                                )
         end = time.time()
         #print('elapsed', end-start)
 
@@ -196,6 +199,10 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                 
                 if args.pedagogical_sampling and not args.use_bayesian_teacher:
                     if i == 0:  # only do this for the teacher
+                        # compute the number of unique demos generated in the batch
+                        num_unique_demos = len(set(neural_game_scores.argmax(-1).cpu().numpy()))
+                        batch_num_unique_teacher_demos.append(num_unique_demos)
+
                         # compute alignment with Bayesian model for a range of teacher alpha vals
                         for teacher_alpha in batch_teacher_mean_score.keys():
                             #breakpoint()
@@ -208,7 +215,6 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                             corr = compute_correlation(neural_game_scores, bayesian_demo_scores)
                             mean_bayesian_score = compute_mean_bayesian_score(neural_game_scores, bayesian_demo_scores)
 
-                            
                             batch_teacher_dist[teacher_alpha].append(corr)
                             batch_teacher_mean_score[teacher_alpha].append(mean_bayesian_score)
                 
@@ -302,12 +308,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         print('accuracy:', metrics['accuracy_' + str(i)])
 
     if args.learn_from_demos and args.pedagogical_sampling and not args.use_bayesian_teacher:
+        metrics['num_unique_demos'] = mean(batch_num_unique_teacher_demos)
+        print('num unique demos:', metrics['num_unique_demos'])
+
         for teacher_alpha in batch_teacher_dist.keys():
             metrics['jsd_alpha={}'.format(teacher_alpha)] = mean(batch_teacher_dist[teacher_alpha])
             metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)] = mean(batch_teacher_mean_score[teacher_alpha])
 
-            print('jsd:', metrics['jsd_alpha={}'.format(teacher_alpha)])
-            print('mean Bayesian score:', metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)])
+            #print('jsd:', metrics['jsd_alpha={}'.format(teacher_alpha)])
+            #print('mean Bayesian score:', metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)])
         
 
     """
@@ -400,7 +409,7 @@ def main():
     for i in range(args.epochs):
         print('epoch', i)
         start = time.time()
-        if i == 30: breakpoint()
+        
         train_metrics, train_demos_df, _ = run_epoch('train', game, agents, optimizer, args)
         val_metrics, val_demos_df, val_df = run_epoch('val', game, agents, optimizer, args)
         
