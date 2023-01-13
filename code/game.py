@@ -44,9 +44,10 @@ class SimpleGame():
 
 class SignalingBanditsGame():
     def __init__(self, num_choices=3, 
-                    num_colors=3, num_shapes=3, 
+                    num_colors=4, num_shapes=4, 
                     max_color_val=6, max_shape_val=3,
-                    num_games_for_eval=1
+                    num_games_for_eval=1,
+                    train_percent=0.8
                 ):
         self.num_choices = num_choices
         self.num_colors = num_colors
@@ -60,7 +61,15 @@ class SignalingBanditsGame():
 
         self.possible_reward_assignments = list(itertools.product(color_orderings, shape_orderings))
         self.num_reward_assignments = len(self.possible_reward_assignments)
-
+        
+        # fix the train and val indices
+        # get the first train_percent of indices here
+        all_indices_shuffled = np.arange(0, self.num_reward_assignments)
+        np.random.shuffle(all_indices_shuffled)
+        self.train_indices = all_indices_shuffled[:int(self.num_reward_assignments * train_percent)]
+        # the complement is the val indices
+        self.val_indices = np.array(list(set(np.arange(0, self.num_reward_assignments)) - set(self.train_indices)))
+        
         # all possible listener contexts
         num_unique_objects = num_colors * num_shapes 
         self.combinations = list(itertools.combinations(range(num_unique_objects), r=num_choices))
@@ -68,14 +77,13 @@ class SignalingBanditsGame():
         # fix the number of unique games on which we evaluate each agent's accuracy
         self.num_games_for_eval = num_games_for_eval
 
-    def sample_reward_matrix(self, inductive_bias, split, train_percent):
+    def sample_reward_matrix(self, inductive_bias, split):
         """
         Generate the reward matrix, to which the speaker will gain access
 
         Arguments:
             inductive_bias (Boolean)
             split (string): 'train' or 'val'
-            train_percent (float): size of train split
 
         Return:
             reward_matrix: np.array of size (self.num_colors*self.num_shapes, self.num_colors + self.num_shapes + 1)
@@ -90,12 +98,10 @@ class SignalingBanditsGame():
             probs = [(1/24) * 0.2] * 24 + [(1/(self.num_reward_assignments-24)) * 0.8] * (self.num_reward_assignments-24)
             reward_assignment_idx = np.random.choice(self.num_reward_assignments, p=probs)
         else:
-            if split == 'train':
-                train_upper_bound_idx = int(self.num_reward_assignments * train_percent)
-                reward_assignment_idx = np.random.randint(0, train_upper_bound_idx)
+            if split == 'train':    
+                reward_assignment_idx = np.random.choice(self.train_indices)
             else:
-                val_lower_bound_idx = int(self.num_reward_assignments * train_percent)
-                reward_assignment_idx = np.random.randint(val_lower_bound_idx, self.num_reward_assignments)
+                reward_assignment_idx = np.random.choice(self.val_indices)
 
         reward_assignment = self.possible_reward_assignments[reward_assignment_idx]
         color_utilities, shape_utilities = reward_assignment
@@ -121,13 +127,12 @@ class SignalingBanditsGame():
     
         return np.array(reward_matrix)
 
-    def sample_batch(self, inductive_bias, split, train_percent=0.8, batch_size=32):
+    def sample_batch(self, inductive_bias, split, batch_size=32):
         """
         Sample games for a whole batch
         Arguments:
         inductive_bias (Boolean): whether to skew the distribution of examples
         split (string): 'train' or 'val'
-        train_percent (float): size of the train split
         batch_size (int)
 
         Return
@@ -141,7 +146,7 @@ class SignalingBanditsGame():
         batch_all_listener_views = []
         
         for i in range(batch_size):
-            reward_matrix = self.sample_reward_matrix(inductive_bias, split, train_percent)
+            reward_matrix = self.sample_reward_matrix(inductive_bias, split)
  
             all_listener_views = reward_matrix[self.combinations][:, :, :-1]
 

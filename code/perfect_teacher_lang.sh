@@ -11,6 +11,6 @@ do
         --lr 5e-06 \
         --epochs 50 \
         --wandb \
-        --name "perfect-teacher_lang_${i}"
+        --name "perfect-teacher_lang_${i}" \
         --group "perfect-teacher_lang"
 done
