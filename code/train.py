@@ -101,6 +101,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_teacher_dist = {i:[] for i in [1, 10, 100, 1000, 10000]}
     batch_teacher_mean_score = {i:[] for i in [1, 10, 100, 1000, 10000]}
     batch_num_unique_teacher_demos = []
+    batch_num_unique_teacher_messages = []
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -233,6 +234,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                 messages_to_log,
                                                                 reward_matrices_views_to_log,
                                                                 args)
+                
 
             # get the listener predictions
             preds = torch.argmax(scores_i, dim=-1)    # (batch_size)

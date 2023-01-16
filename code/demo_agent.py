@@ -13,7 +13,7 @@ class DemoAgent(nn.Module):
     def __init__(self, chain_length,
                 pedagogical_sampling,
                 object_encoding_len=8, num_objects=16,
-                num_intermediate_features=100,
+                num_intermediate_features=64,
                 embedding_dim=64, hidden_size=120,
                 num_examples_for_demos=10,
                 num_choices_in_listener_context=3):
@@ -28,6 +28,8 @@ class DemoAgent(nn.Module):
         self.num_choices_in_listener_context = num_choices_in_listener_context
         self.object_encoding_len = object_encoding_len
 
+        # instead of using this to represent the game that the agent is evaluated on,
+        # we want to recycle the examples_mlp to encourage grounding
         self.games_embedding =  nn.Sequential(
                                     nn.Linear(object_encoding_len, hidden_size),
                                     nn.ReLU(),
@@ -64,6 +66,7 @@ class DemoAgent(nn.Module):
         self.pedagogical_sampling = pedagogical_sampling
 
         if self.pedagogical_sampling:
+            # TODO: make this not hardcoded
             NUM_POSSIBLE_DEMOS = 560
 
             demo_input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
@@ -72,8 +75,7 @@ class DemoAgent(nn.Module):
 
             self.onehot_embedding = nn.Linear(NUM_POSSIBLE_DEMOS, self.embedding_dim)
             self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
-            # TODO: if you let embedding dims match up more cleanly, you can
-            # avoid these projection layers
+            
             self.init_h = nn.Linear(self.embedding_dim, self.hidden_size)
             self.outputs2demos = nn.Linear(self.embedding_dim, NUM_POSSIBLE_DEMOS)
 
@@ -105,9 +107,9 @@ class DemoAgent(nn.Module):
         reward_matrix_emb = self.reward_matrix_compression_mlp(reward_matrix_emb)
 
         demos = demos.to(reward_matrices.device)    # move to GPU
-        demos_emb = self.examples_mlp(demos)   # (batch_size, num_intermediate_features)
+        demos_emb = self.examples_mlp(demos)   # (batch_size, num_demos, obj_encoding_len+1, num_intermediate_features)
         demos_emb = demos_emb.view(batch_size, -1)
-        demos_emb = self.examples_compression_mlp(demos_emb)
+        demos_emb = self.examples_compression_mlp(demos_emb)    # (batch_size, embedding_size)
 
         composite_emb = torch.cat([reward_matrix_emb, demos_emb], dim=1)    # (batch_size, 2*num_intermediate_features)
 
@@ -276,7 +278,17 @@ class DemoAgent(nn.Module):
             scores_for_comparison = None
 
         # 3. produce scores over outputs for the games that are used to evaluate performance
-        eval_listener_context_emb = self.games_embedding(games_for_eval.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
+        #eval_listener_context_emb = self.games_embedding(games_for_eval.float()) # (batch_size, num_views, num_choices_in_listener_context, embedding_dim)
+        
+        # try it with recycled embedding
+        # first we need to make the dimensions work by adding an extra zero at the end of each listener context
+        zeros_shape = [games_for_eval.shape[0], games_for_eval.shape[1], games_for_eval.shape[2], 1]
+        zeros = torch.zeros(size=zeros_shape).to(reward_matrices.device)
+        games_for_eval_with_pad = torch.cat([games_for_eval.float(), zeros.float()], dim=-1)
+
+        # then we can embed the padded games
+        eval_listener_context_emb = self.examples_mlp(games_for_eval_with_pad)
+        
         eval_scores = torch.einsum('bvce,be->bvc', (eval_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
         eval_scores = F.log_softmax(eval_scores, dim=-1)
 
