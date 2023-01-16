@@ -14,6 +14,8 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 
+from scipy.special import comb
+
 from statistics import mean
 from collections import defaultdict
 import time
@@ -206,13 +208,13 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
                         # compute alignment with Bayesian model for a range of teacher alpha vals
                         for teacher_alpha in batch_teacher_mean_score.keys():
-                            #breakpoint()
+                            
                             bayesian_demo_scores = compute_demo_score(all_possible_games=all_possible_games,
                                                                             is_first_agent=prev_demo_i is None, 
                                                                             reward_matrices=reward_matrices,
                                                                             game=game,
                                                                             teacher_alpha=teacher_alpha)
-
+                            #breakpoint()
                             corr = compute_correlation(neural_game_scores, bayesian_demo_scores)
                             mean_bayesian_score = compute_mean_bayesian_score(neural_game_scores, bayesian_demo_scores)
 
@@ -359,11 +361,14 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 def main():
     args = get_args()
     if args.learn_from_demos:
+        num_objects = args.num_colors * args.num_shapes
+        num_possible_demos = int(comb(num_objects, 3))
         agent = DemoAgent(chain_length=args.chain_length,
                             pedagogical_sampling=args.pedagogical_sampling,
+                            num_possible_demos=num_possible_demos,
                             object_encoding_len=args.num_colors + args.num_shapes, 
                             num_examples_for_demos=args.num_examples_for_demos,
-                            num_objects=args.num_colors * args.num_shapes
+                            num_objects=num_objects
                         )
     else:
         agent = LanguageAgent(chain_length=args.chain_length,

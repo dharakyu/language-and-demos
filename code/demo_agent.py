@@ -12,6 +12,7 @@ import copy
 class DemoAgent(nn.Module):
     def __init__(self, chain_length,
                 pedagogical_sampling,
+                num_possible_demos,
                 object_encoding_len=8, num_objects=16,
                 num_intermediate_features=64,
                 embedding_dim=64, hidden_size=120,
@@ -67,17 +68,18 @@ class DemoAgent(nn.Module):
 
         if self.pedagogical_sampling:
             # TODO: make this not hardcoded
-            NUM_POSSIBLE_DEMOS = 560
+            #NUM_POSSIBLE_DEMOS = 560
+            self.num_possible_demos = num_possible_demos
 
             demo_input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
             self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.hidden_size)
             #self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.embedding_dim)
 
-            self.onehot_embedding = nn.Linear(NUM_POSSIBLE_DEMOS, self.embedding_dim)
+            self.onehot_embedding = nn.Linear(num_possible_demos, self.embedding_dim)
             self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
             
             self.init_h = nn.Linear(self.embedding_dim, self.hidden_size)
-            self.outputs2demos = nn.Linear(self.embedding_dim, NUM_POSSIBLE_DEMOS)
+            self.outputs2demos = nn.Linear(self.embedding_dim, num_possible_demos)
 
             self.outputs_mlp = nn.Sequential(
                                         nn.Linear(self.hidden_size, self.hidden_size),
@@ -153,6 +155,7 @@ class DemoAgent(nn.Module):
             torch.Tensor of size (batch_size, num_possible_games)
 
         """
+        
         batch_size = reward_matrices.shape[0]
         
         # 1. produce an embedding of the demos

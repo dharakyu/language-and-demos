@@ -170,7 +170,7 @@ class SignalingBanditsGame():
         Return:
         reshaped_rewards: torch.Tensor of size (batch_size, num_listener_views, self.num_choices)
         """
-
+        #breakpoint()
         batch_size = reward_matrices.shape[0]
         indices_of_ones = listener_views.nonzero()
         indices_of_ones_combined = indices_of_ones.view(indices_of_ones.shape[0] // 2, -1)
@@ -182,7 +182,7 @@ class SignalingBanditsGame():
         indices_into_batch = indices_of_ones_combined[:, 0]
 
         # arithmetic trick to derive the index into the reward matrix
-        indices_into_reward_matrix_row = self.num_colors*indices_of_ones_combined[:, self.num_colors-1] + \
+        indices_into_reward_matrix_row = self.num_colors*indices_of_ones_combined[:, 3] + \
                                         (indices_of_ones_combined[:, -1]-self.num_shapes)
 
         # note that we only need the index of the sample in the batch and the row in the reward matrix
