@@ -67,13 +67,10 @@ class DemoAgent(nn.Module):
         self.pedagogical_sampling = pedagogical_sampling
 
         if self.pedagogical_sampling:
-            # TODO: make this not hardcoded
-            #NUM_POSSIBLE_DEMOS = 560
             self.num_possible_demos = num_possible_demos
 
             demo_input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
             self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.hidden_size)
-            #self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.embedding_dim)
 
             self.onehot_embedding = nn.Linear(num_possible_demos, self.embedding_dim)
             self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
@@ -168,11 +165,19 @@ class DemoAgent(nn.Module):
         reward_matrix_and_demos_emb = self.embed_reward_matrix_and_demos(reward_matrices, demos)
 
         # 2. Produce demos for the next generation
+        
         if self.pedagogical_sampling:
             # a) evaluate the current agent on all possible (560) games
             # move to gpu
+            #breakpoint()
             all_possible_games = all_possible_games.to(reward_matrices.device)  # (batch_size, num_examples_for_demo, num_choices_in_listener_context, obj_encoding_len)
-            all_games_listener_context_emb = self.games_embedding(all_possible_games.float())
+
+            # do the padding thing so that we can re-use the demo embedding
+            zeros_shape = [all_possible_games.shape[0], all_possible_games.shape[1], all_possible_games.shape[2], 1]
+            zeros = torch.zeros(size=zeros_shape).to(reward_matrices.device)
+            all_possible_games_with_pad = torch.cat([all_possible_games.float(), zeros.float()], dim=-1)
+
+            all_games_listener_context_emb = self.examples_mlp(all_possible_games_with_pad)
             game_scores = torch.einsum('bvce,be->bvc', (all_games_listener_context_emb, reward_matrix_and_demos_emb))  # (batch_size, num_views, num_choices_in_listener_context)
             game_scores = F.log_softmax(game_scores, dim=-1)
 
@@ -247,7 +252,7 @@ class DemoAgent(nn.Module):
                 demos_for_next_gen[:, j, :, :] = demo_j
 
                 # update inputs by pushing the predicted onehot encoding through self.onehot_embedding
-                predicted_onehot_unsqueezed = predicted_onehot.unsqueeze(0) # (1, batch_size, 560)
+                predicted_onehot_unsqueezed = predicted_onehot.unsqueeze(0) # (1, batch_size, self.num_possible_demos)
                 new_inputs = self.onehot_embedding(predicted_onehot_unsqueezed)     # (1, batch_size, hidden_size)
                 inputs = new_inputs
 
