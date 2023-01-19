@@ -73,6 +73,7 @@ class SignalingBanditsGame():
         # all possible listener contexts
         num_unique_objects = num_colors * num_shapes 
         self.combinations = list(itertools.combinations(range(num_unique_objects), r=num_choices))
+        self.num_possible_demos = len(self.combinations)
 
         # fix the number of unique games on which we evaluate each agent's accuracy
         self.num_games_for_eval = num_games_for_eval
@@ -141,11 +142,15 @@ class SignalingBanditsGame():
         batch_all_listener_views: np.array of size (batch_size, len(self.combinations), self.num_choices, self.num_colors+self.num_shapes)
         """
 
-        batch_reward_matrices = []
-        batch_eval_listener_views = []
-        batch_all_listener_views = []
+        #batch_reward_matrices = []
+        #batch_eval_listener_views = []
+        #batch_all_listener_views = []
         
-        for i in range(batch_size):
+        batch_reward_matrices = np.zeros(shape=(batch_size, self.num_colors*self.num_shapes, self.num_colors+self.num_shapes+1))
+        batch_eval_listener_views = np.zeros(shape=(batch_size, self.num_games_for_eval, self.num_choices, self.num_colors+self.num_shapes))
+        batch_all_listener_views = np.zeros(shape=(batch_size, self.num_possible_demos, self.num_choices, self.num_colors+self.num_shapes))
+        
+        for i in range(batch_size): 
             reward_matrix = self.sample_reward_matrix(inductive_bias, split)
  
             all_listener_views = reward_matrix[self.combinations][:, :, :-1]
@@ -153,11 +158,15 @@ class SignalingBanditsGame():
             random_indices = np.random.choice(a=len(self.combinations), size=self.num_games_for_eval, replace=False) 
             eval_listener_views = all_listener_views[random_indices, ...]
 
-            batch_reward_matrices.append(reward_matrix)
-            batch_eval_listener_views.append(eval_listener_views)
-            batch_all_listener_views.append(all_listener_views)
-        
-        return np.array(batch_reward_matrices), np.array(batch_eval_listener_views), np.array(batch_all_listener_views)
+            #batch_reward_matrices.append(reward_matrix)
+            #batch_eval_listener_views.append(eval_listener_views)
+            #batch_all_listener_views.append(all_listener_views)
+            batch_reward_matrices[i] = reward_matrix
+            batch_eval_listener_views[i] = eval_listener_views
+            batch_all_listener_views[i] = all_listener_views
+        #breakpoint()
+        #return np.array(batch_reward_matrices), np.array(batch_eval_listener_views), np.array(batch_all_listener_views)
+        return batch_reward_matrices, batch_eval_listener_views, batch_all_listener_views
 
     def compute_rewards(self, listener_views, reward_matrices):
         """

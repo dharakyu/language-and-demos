@@ -8,6 +8,7 @@ from listener import RNNEncoder
 import data
 
 import copy
+import time
 
 class DemoAgent(nn.Module):
     def __init__(self, chain_length,
@@ -72,17 +73,19 @@ class DemoAgent(nn.Module):
             demo_input_dim = (num_choices_in_listener_context * object_encoding_len) + num_choices_in_listener_context
             self.teacher_demo_encoding_mlp = nn.Linear(demo_input_dim, self.hidden_size)
 
-            self.onehot_embedding = nn.Linear(num_possible_demos, self.embedding_dim)
+            #self.onehot_embedding = nn.Linear(num_possible_demos, self.embedding_dim)  # not using this anymore
             self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
             
             self.init_h = nn.Linear(self.embedding_dim, self.hidden_size)
-            self.outputs2demos = nn.Linear(self.embedding_dim, num_possible_demos)
+            #self.outputs2demos = nn.Linear(self.embedding_dim, num_possible_demos)
 
             self.outputs_mlp = nn.Sequential(
                                         nn.Linear(self.hidden_size, self.hidden_size),
                                         nn.ReLU(),
                                         nn.Linear(self.hidden_size, self.hidden_size),
                                 )
+            
+            self.embed_demo_embedding_for_next_it = nn.Linear(self.hidden_size, self.embedding_dim)
 
 
     def embed_reward_matrix_and_demos(self,
@@ -226,7 +229,12 @@ class DemoAgent(nn.Module):
 
                 # this is taking a dot product between the demo representations and the agent's state
                 # to compute a score over every demo
-                outputs = torch.einsum('bde, be->bd', (all_demos_emb, outputs)) # (batch_size, 560)
+                #start = time.time()
+                #outputs = torch.einsum('bde, be->bd', (all_demos_emb, outputs)) # (batch_size, 560)
+                outputs = torch.bmm(all_demos_emb, outputs.unsqueeze(-1)).squeeze(-1)
+                #breakpoint()
+                #end = time.time()
+                #print(end - start)
 
                 # this is used for the comparison to the Bayesian model
                 # this has to be in log probs bc of how the pytorch KL function works!!
@@ -245,16 +253,24 @@ class DemoAgent(nn.Module):
 
                 # Zero out all demos except for the ones corresponding to
                 # `predicted_onehot`
-                demo_j = all_possible_demos * predicted_onehot.unsqueeze(-1)  # (batch_size, 560, 27) * (batch_size, 560, 1)
-                demo_j = demo_j.view(batch_size, num_possible_games, self.num_choices_in_listener_context, -1)  # (batch_size, 560, 3, 9)
+                #breakpoint()
 
+                # note: this line isn't strictly necessary. it zeros out all the indices corresponding to 
+                # zeros in the one-hot vector, but we don't need that bc we just index them out anyways
+                #demo_j = all_possible_demos * predicted_onehot.unsqueeze(-1)  # (batch_size, 560, 27) * (batch_size, 560, 1)
+                #demo_j = demo_j.view(batch_size, num_possible_games, self.num_choices_in_listener_context, -1)  # (batch_size, 560, 3, 9)
+                demo_j = all_possible_demos.view(batch_size, num_possible_games, self.num_choices_in_listener_context, -1)
                 demo_j = demo_j[predicted_onehot.bool()]  # (batch_size, 3, 9)
                 demos_for_next_gen[:, j, :, :] = demo_j
 
                 # update inputs by pushing the predicted onehot encoding through self.onehot_embedding
-                predicted_onehot_unsqueezed = predicted_onehot.unsqueeze(0) # (1, batch_size, self.num_possible_demos)
-                new_inputs = self.onehot_embedding(predicted_onehot_unsqueezed)     # (1, batch_size, hidden_size)
-                inputs = new_inputs
+                #predicted_onehot_unsqueezed = predicted_onehot.unsqueeze(0) # (1, batch_size, self.num_possible_demos)
+                #new_inputs = self.onehot_embedding(predicted_onehot_unsqueezed)     # (1, batch_size, hidden_size)
+                #inputs = new_inputs
+                emb_of_selected_demo = all_demos_emb[predicted_onehot.bool()]   # (batch_size, hidden_size)
+                emb_of_selected_demo = emb_of_selected_demo.unsqueeze(0)    # (1, batch_size, hidden_size)
+                emb_of_selected_demo = self.embed_demo_embedding_for_next_it(emb_of_selected_demo)  # (1, batch_size, hidden_dim)
+                inputs = emb_of_selected_demo
 
                 # TODO: retrieve demo emb corresponding to what you predicted...
                 # state will keep track of past demos, though we may want to

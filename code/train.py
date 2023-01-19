@@ -111,11 +111,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_to_log = []
         reward_matrices_views_to_log = []
 
-        start = time.time()
+        #start = time.time()
         reward_matrices, games_for_eval, all_possible_games = game.sample_batch(inductive_bias=(training and args.inductive_bias),
                                                                                 split=dataset_split
                                                                                 )
-        end = time.time()
+        #end = time.time()
         #print('elapsed', end-start)
 
         batch_size = reward_matrices.shape[0]
@@ -207,6 +207,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                         batch_num_unique_teacher_demos.append(num_unique_demos)
 
                         # compute alignment with Bayesian model for a range of teacher alpha vals
+                        """
                         for teacher_alpha in batch_teacher_mean_score.keys():
                             
                             bayesian_demo_scores = compute_demo_score(all_possible_games=all_possible_games,
@@ -220,7 +221,8 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
 
                             batch_teacher_dist[teacher_alpha].append(corr)
                             batch_teacher_mean_score[teacher_alpha].append(mean_bayesian_score)
-                
+                        """
+
                 # update the demos for the next generation to ingest
                 prev_demo_i = demo_i
                 
@@ -315,9 +317,9 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         metrics['num_unique_demos'] = mean(batch_num_unique_teacher_demos)
         print('num unique demos:', metrics['num_unique_demos'])
 
-        for teacher_alpha in batch_teacher_dist.keys():
-            metrics['jsd_alpha={}'.format(teacher_alpha)] = mean(batch_teacher_dist[teacher_alpha])
-            metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)] = mean(batch_teacher_mean_score[teacher_alpha])
+        #for teacher_alpha in batch_teacher_dist.keys():
+        #    metrics['jsd_alpha={}'.format(teacher_alpha)] = mean(batch_teacher_dist[teacher_alpha])
+        #    metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)] = mean(batch_teacher_mean_score[teacher_alpha])
 
             #print('jsd:', metrics['jsd_alpha={}'.format(teacher_alpha)])
             #print('mean Bayesian score:', metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)])
