@@ -398,7 +398,9 @@ def main():
                         for agent in agents]
 
     metrics = defaultdict(list)
-    game = SignalingBanditsGame(num_colors=args.num_colors, num_shapes=args.num_shapes)
+    game = SignalingBanditsGame(num_colors=args.num_colors, 
+                                num_shapes=args.num_shapes, 
+                                train_percent=args.train_percent)
 
     if args.wandb:
         import wandb
