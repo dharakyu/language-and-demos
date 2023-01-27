@@ -59,7 +59,7 @@ def get_args():
     parser.add_argument('--teacher_alpha', default=1, type=int)
     parser.add_argument('--use_bayesian_teacher', action='store_true')
 
-    parser.add_argument('--save_dir', default='/home/dharakyu/signaling-bandits/outputs', type=str)
+    parser.add_argument('--save_dir', default='/home/dharakyu/signaling-bandits/qualitative_analysis', type=str)
     parser.add_argument('--save_outputs', action='store_true')
 
     args = parser.parse_args()

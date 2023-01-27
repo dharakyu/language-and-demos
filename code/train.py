@@ -100,10 +100,10 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
     batch_rewards_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_losses_after_agent_i = [[] for _ in range(args.chain_length)]
     batch_accuracy_after_agent_i = [[] for _ in range(args.chain_length)]
-    batch_teacher_dist = {i:[] for i in [1, 10, 100, 1000, 10000]}
-    batch_teacher_mean_score = {i:[] for i in [1, 10, 100, 1000, 10000]}
+    #batch_teacher_dist = {i:[] for i in [1, 10, 100, 1000, 10000]}
+    #batch_teacher_mean_score = {i:[] for i in [1, 10, 100, 1000, 10000]}
     batch_num_unique_teacher_demos = []
-    batch_num_unique_teacher_messages = []
+    #batch_num_unique_teacher_messages = []
     
     data_to_log = []
     for batch_idx in range(args.num_batches_per_epoch):
@@ -111,12 +111,10 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
         reward_matrices_to_log = []
         reward_matrices_views_to_log = []
 
-        #start = time.time()
-        reward_matrices, games_for_eval, all_possible_games = game.sample_batch(inductive_bias=(training and args.inductive_bias),
+        
+        reward_matrices, games_for_eval, all_possible_games, reward_assignments = game.sample_batch(inductive_bias=(training and args.inductive_bias),
                                                                                 split=dataset_split
                                                                                 )
-        #end = time.time()
-        #print('elapsed', end-start)
 
         batch_size = reward_matrices.shape[0]
 
@@ -192,7 +190,7 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                             game=game,
                                                                             teacher_alpha=100,
                                                                             games_for_eval=games_for_eval)
-
+                
                 else:
                     demo_i, scores_i, neural_game_scores = agent_i(reward_matrices=agent_view,
                                                                 demos=prev_demo_i,
@@ -200,14 +198,15 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                 games_for_eval=games_for_eval)
 
                 
+                
                 if args.pedagogical_sampling and not args.use_bayesian_teacher:
                     if i == 0:  # only do this for the teacher
                         # compute the number of unique demos generated in the batch
                         num_unique_demos = len(set(neural_game_scores.argmax(-1).cpu().numpy()))
                         batch_num_unique_teacher_demos.append(num_unique_demos)
-
-                        # compute alignment with Bayesian model for a range of teacher alpha vals
                         """
+                        # compute alignment with Bayesian model for a range of teacher alpha vals
+                        
                         for teacher_alpha in batch_teacher_mean_score.keys():
                             
                             bayesian_demo_scores = compute_demo_score(all_possible_games=all_possible_games,
@@ -238,7 +237,12 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                                                                 messages_to_log,
                                                                 reward_matrices_views_to_log,
                                                                 args)
-                
+            
+            if i == 0:  # save for logging
+                if args.learn_from_demos: 
+                    signals = demo_i
+                else:
+                    signals = lang_i
 
             # get the listener predictions
             preds = torch.argmax(scores_i, dim=-1)    # (batch_size)
@@ -296,8 +300,13 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
                         else:
                             optimizer[i].step()
 
-        batch_data_to_log = reward_matrices_to_log + reward_matrices_views_to_log + messages_to_log
-        data_to_log.append(batch_data_to_log)
+
+        for idx in range(args.batch_size):
+            reward_assignment = reward_assignments[idx]
+            reward_matrix = reward_matrices[idx].detach().cpu().numpy()
+            signal = signals[i].detach().cpu().numpy()
+            
+            data_to_log.append([reward_assignment, reward_matrix, signal])
         
     
     print(dataset_split)
@@ -324,41 +333,11 @@ def run_epoch(dataset_split, game, agents, optimizer, args):
             #print('jsd:', metrics['jsd_alpha={}'.format(teacher_alpha)])
             #print('mean Bayesian score:', metrics['mean Bayesian score_alpha={}'.format(teacher_alpha)])
         
+    # log
+    col_names = ['reward_assignment', 'reward_matrix', 'signal']
+    df = pd.DataFrame(data_to_log, columns=col_names)
 
-    """
-    # log a subset of the demos to analyze the agent strategy
-    if args.learn_from_demos and args.pedagogical_sampling:
-        # reshape demos_subset so that it's a table with n_demos columns and k rows, each containing a demo of size (3, 9)
-        col_names = ['demo_' + str(i) for i in range(args.num_examples_for_demos)]
-        reshaped_demos = np.empty(shape=(20, args.num_examples_for_demos), dtype=object)
-        
-        for row_idx in range(20):
-            for col_idx in range(args.num_examples_for_demos):
-                demos_as_strings = [None] * 3
-                for i in range(3):
-                    object_i = demos_subset[row_idx, col_idx, i]
-                    selected_color = np.where(object_i[:4] == 1)[0][0]
-                    selected_shape = np.where(object_i[4:8] == 1)[0][0]
-                    chosen_by_agent = object_i[-1] == 1
-
-                    string_expression = "color {}, shape {}, selected {}".format(selected_color, selected_shape, chosen_by_agent)
-                    demos_as_strings[i] = string_expression
-                    
-                reshaped_demos[row_idx, col_idx] = " | ".join(demos_as_strings)
-        
-        demos_df = pd.DataFrame(data=reshaped_demos, columns=col_names)
-    """
-    # TODO: fix the logging so it works with language or demonstration
-    # initialize a DataFrame for logging reward matrices and messages
-    #reward_matrix_col_names = ['reward_matrix_' + str(i) for i in range(num_gens_to_iterate_over)]
-    #message_col_names = ['message_' + str(i) for i in range(num_gens_to_iterate_over)]
-    #col_names = ['reward_matrix'] + reward_matrix_col_names + message_col_names
-    #df = pd.DataFrame(data_to_log, columns=col_names)
-
-    demos_df = None
-    df = None
-    
-    return metrics, demos_df, df
+    return metrics, df
 
 def main():
     args = get_args()
@@ -421,13 +400,16 @@ def main():
         print('epoch', i)
         start = time.time()
         
-        train_metrics, train_demos_df, _ = run_epoch('train', game, agents, optimizer, args)
-        val_metrics, val_demos_df, val_df = run_epoch('val', game, agents, optimizer, args)
+        train_metrics, train_df = run_epoch('train', game, agents, optimizer, args)
+        val_metrics, val_df = run_epoch('val', game, agents, optimizer, args)
         
         # just save the validation set, and rewrite it after each iter
         if args.save_outputs:
-            pkl_full_save_path = os.path.join(args.save_dir, args.name + '_val.pkl')
-            val_df.to_pickle(pkl_full_save_path)
+            train_pkl_full_save_path = os.path.join(args.save_dir, args.name + '_train.pkl')
+            train_df.to_pickle(train_pkl_full_save_path)
+
+            val_pkl_full_save_path = os.path.join(args.save_dir, args.name + '_val.pkl')
+            val_df.to_pickle(val_pkl_full_save_path)
         
         for metric, value in train_metrics.items():
             metrics['train_{}'.format(metric)] = value
