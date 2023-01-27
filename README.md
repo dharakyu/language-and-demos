@@ -2,6 +2,8 @@
 
 Repository for Cogsci 2023 submission.
 
+All simulation code is contained in the `code` folder, and the main training loop is defined in `train.py`. The language and demonstration models are defined in `lang_agent.py` and `demo_agent.py'. 
+
 Experiment tracking is configured with Weights and Biases. To log experiments to your account, run `wandb init` in the command line and specify the experiment tracking folder.
 
 #### To run the sweep over message capacity (Figure 2):
