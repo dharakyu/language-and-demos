@@ -1,22 +1,27 @@
 # signaling-bandits
 
-#### To recreate the experiments in Figure 2:
+Repository for Cogsci 2023 submission.
+
+Experiment tracking is configured with Weights and Biases. To log experiments to your account, run `wandb init` in the command line and specify the experiment tracking folder.
+
+#### To run the sweep over message capacity (Figure 2):
 ```
 cd code
-bash run_trials.sh
-bash run_baseline.sh
+./perfect_teacher_lang.sh
+./perfect_teacher_pedagogical_demo.sh
+./perfect_teacher_random_demo.sh
 ```
 
-#### To recreate the table in Figure 3:
+#### To run the sweep over inherent task difficulty (Figure 3):
 ```
-cd analysis
-jupyter notebook
+cd code
+./perfect_teacher_game_difficulty_lang.sh
+./perfect_teacher_game_difficulty_pedagogical_demos.sh
 ```
-launch `analyze_reward.ipynb` and run the cells
 
-#### To recreate the visualization in Figure 4:
+#### To run the sweep over agent competence (Figure 4):
 ```
-cd analysis
-jupyter notebook
+cd code
+./perfect_teacher_train_size_lang.sh
+./perfect_teacher_train_size_pedagogical_sampling.sh
 ```
-launch `analyze_messages.ipynb` and run the cells
