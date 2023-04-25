@@ -4,9 +4,6 @@ import torch.nn.functional as F
 
 import numpy as np
 
-from listener import RNNEncoder
-import data
-
 class LanguageAgent(nn.Module):
     def __init__(self, chain_length,
                 object_encoding_len=6, num_objects=9,
@@ -53,11 +50,6 @@ class LanguageAgent(nn.Module):
             self.onehot_embedding = nn.Linear(self.vocab_size, self.embedding_dim)
             self.gru = nn.GRU(self.embedding_dim, self.hidden_size)
             self.outputs2vocab = nn.Linear(self.hidden_size, self.vocab_size)
-                
-            # for computing scores over objects
-            message_embedding = nn.Embedding(vocab_size, embedding_dim)
-            self.lang_model = RNNEncoder(message_embedding, hidden_size)
-            self.bilinear = nn.Linear(self.lang_model.hidden_size, embedding_dim, bias=False)
 
         else:
             # produce a continuous message, conditioned on the reward matrix/input message

@@ -1,5 +1,3 @@
-from speaker import Speaker
-from listener import Listener
 from game import SignalingBanditsGame
 from arguments import get_args
 from lang_agent import LanguageAgent
@@ -405,6 +403,9 @@ def main():
         
         # just save the validation set, and rewrite it after each iter
         if args.save_outputs:
+            if not os.path.exists(args.save_dir):
+                os.makedirs(args.save_dir)
+
             train_pkl_full_save_path = os.path.join(args.save_dir, args.name + '_train.pkl')
             train_df.to_pickle(train_pkl_full_save_path)
 
