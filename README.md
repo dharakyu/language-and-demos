@@ -49,7 +49,7 @@ cd code
 ./qualitative_analysis_job.sh
 ```
 
-### To run additional experiments over task difficulty, also varying the channel size (bonus experiments in Footnote 3):
+#### To run additional experiments over task difficulty, also varying the channel size (bonus experiments in Footnote 3):
 ```
 cd code
 ./game_difficulty_sweep_lang.sh
