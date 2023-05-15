@@ -1,6 +1,6 @@
-# signaling-bandits
+# language-and-demos
 
-Repository for Cogsci 2023 submission.
+Repository for Cogsci 2023 paper, "Characterizing tradeoffs between teaching via language and demonstrations with multi-agent systems".
 
 This repository is organized as follows:
 - `code` contains all simulation code. The main model training loop is defined in `train.py`. The language and demonstration models are defined in `lang_agent.py` and `demo_agent.py`. 
@@ -24,27 +24,34 @@ Note: make sure to run `chmod +x my_script.sh` to make it executable.
 
 ```
 cd code
-./perfect_teacher_lang.sh
-./perfect_teacher_pedagogical_demo.sh
-./perfect_teacher_random_demo.sh
+./channel_size_lang.sh
+./channel_size_pedagogical_demo.sh
+./channel_size_random_demo.sh
 ```
 
 #### To run the sweep over inherent task difficulty (Figure 3A):
 ```
 cd code
-./perfect_teacher_game_difficulty_lang.sh
-./perfect_teacher_game_difficulty_pedagogical_demos.sh
+./game_difficulty_lang.sh
+./game_difficulty_pedagogical_demos.sh
 ```
 
 #### To run the sweep over agent competence (Figure 3B):
 ```
 cd code
-./perfect_teacher_train_size_lang.sh
-./perfect_teacher_train_size_pedagogical_sampling.sh
+./train_size_lang.sh
+./train_size_pedagogical_sampling.sh
 ```
 
 #### To log example messages/demonstrations (Figure 4 and 5):
 ```
 cd code
 ./qualitative_analysis_job.sh
+```
+
+### To run additional experiments over task difficulty, also varying the channel size (bonus experiments in Footnote 3):
+```
+cd code
+./game_difficulty_sweep_lang.sh
+./game_difficulty_sweep_pedagogical_demos.sh
 ```
