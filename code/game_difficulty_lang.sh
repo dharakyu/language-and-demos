@@ -14,7 +14,7 @@ do
             --num_shapes ${num_features} \
             --lr 5e-06 \
             --wandb \
-            --name "perfect-teacher_lang_${num_features}x${num_features}_k=2_${i}" \
-            --group "perfect-teacher_lang_${num_features}x${num_features}_k=2"
+            --name "perfect-teacher_lang_${num_features}x${num_features}_len=12_${i}" \
+            --group "perfect-teacher_lang_${num_features}x${num_features}_len=12"
     done
 done

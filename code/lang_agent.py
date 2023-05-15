@@ -4,6 +4,10 @@ import torch.nn.functional as F
 
 import numpy as np
 
+PAD_IDX = 0
+SOS_IDX = 1
+EOS_IDX = 2
+
 class LanguageAgent(nn.Module):
     def __init__(self, chain_length,
                 object_encoding_len=6, num_objects=9,
@@ -140,7 +144,7 @@ class LanguageAgent(nn.Module):
         # first input is SOS token
         # (batch_size, n_vocab)
         inputs_onehot = torch.zeros(batch_size, self.vocab_size).to(emb.device)
-        inputs_onehot[:, data.SOS_IDX] = 1.0
+        inputs_onehot[:, SOS_IDX] = 1.0
 
         # (batch_size, len, n_vocab)
         inputs_onehot = inputs_onehot.unsqueeze(1)
@@ -171,12 +175,12 @@ class LanguageAgent(nn.Module):
                 predicted = predicted.unsqueeze(1)
             else:
                 # do not sample PAD or SOS tokens
-                outputs[:, data.PAD_IDX] = -np.inf
-                outputs[:, data.SOS_IDX] = -np.inf
+                outputs[:, PAD_IDX] = -np.inf
+                outputs[:, SOS_IDX] = -np.inf
 
                 # prevent an empty message
                 if i==0:
-                    outputs[:, data.EOS_IDX] = -np.inf
+                    outputs[:, EOS_IDX] = -np.inf
 
                 predicted_onehot = F.gumbel_softmax(outputs, tau=1, hard=True)
                 # Add to lang
@@ -188,7 +192,7 @@ class LanguageAgent(nn.Module):
             for i, pred in enumerate(predicted_npy):
                 if not done_sampling[i]:
                     lang_length[i] += 1
-                if pred == data.EOS_IDX:
+                if pred == EOS_IDX:
                     done_sampling[i] = True
 
             # (1, batch_size, n_vocab) X (n_vocab, h) -> (1, batch_size, h)
@@ -196,7 +200,7 @@ class LanguageAgent(nn.Module):
 
         # Add EOS if we've never sampled it
         eos_onehot = torch.zeros(batch_size, 1, self.vocab_size).to(emb.device)
-        eos_onehot[:, 0, data.EOS_IDX] = 1.0
+        eos_onehot[:, 0, EOS_IDX] = 1.0
         lang.append(eos_onehot)
         # Cut off the rest of the sentences
         for i, _ in enumerate(predicted_npy):
